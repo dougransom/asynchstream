@@ -1,5 +1,6 @@
 import builtins
 import io
+import socket
 from pathlib import Path
 
 import pytest
@@ -75,3 +76,21 @@ def test_buffered_binary_open(tmp_path: Path) -> None:
 
 def test_io_file_io_patched() -> None:
     assert io.FileIO is py_native_io.DefaultFileIO
+
+
+@pytest.mark.asyncio
+async def test_socket_makefile_patched() -> None:
+    s1, s2 = socket.socketpair()
+    try:
+        w_stream = s1.makefile("wb", buffering=0)
+        r_stream = s2.makefile("rb", buffering=0)
+
+        assert isinstance(w_stream, py_native_io.AsyncIOStream)
+        assert isinstance(r_stream, py_native_io.AsyncIOStream)
+
+        await w_stream.awrite(b"Socket Stream Data")
+        data = await r_stream.aread(18)
+        assert data == b"Socket Stream Data"
+    finally:
+        s1.close()
+        s2.close()

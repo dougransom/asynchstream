@@ -195,6 +195,58 @@ class AsyncBytesIO(AsyncIOBase):
         self._buffer.close()
 
 
+class AsyncSocketIO(io.RawIOBase, AsyncIOBase):
+    """Socket stream adhering to AsyncIOBase and AsyncIOStream contract."""
+
+    def __init__(self, sock: Any, mode: str = "rb") -> None:
+        super().__init__()
+        self._sock = sock
+        self._mode = mode
+        self._is_read = "r" in mode or "+" in mode
+        self._is_write = "w" in mode or "a" in mode or "+" in mode
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            bufs = []
+            while True:
+                chunk: bytes = self._sock.recv(65536)
+                if not chunk:
+                    break
+                bufs.append(chunk)
+            return b"".join(bufs)
+        res: bytes = self._sock.recv(size)
+        return res
+
+    def readinto(self, b: Any) -> int:
+        res: int = self._sock.recv_into(b)
+        return res
+
+    def write(self, b: Any) -> int:
+        res: int = self._sock.send(b)
+        return res
+
+    def close(self) -> None:
+        self._sock.close()
+
+    @property
+    def closed(self) -> bool:
+        res: bool = self._sock.fileno() == -1
+        return res
+
+    def readable(self) -> bool:
+        return self._is_read
+
+    def writable(self) -> bool:
+        return self._is_write
+
+    def seekable(self) -> bool:
+        return False
+
+    def fileno(self) -> int:
+        res: int = self._sock.fileno()
+        return res
+
+
 # Platform-specific subclasses (wrapping Rust NativeFileIO where supported)
 if _ext is not None and hasattr(_ext, "NativeFileIO"):
     NativeFileIO: Any = _ext.NativeFileIO
@@ -307,6 +359,64 @@ def patched_open(
     )
 
 
+def patched_socket_makefile(
+    self: Any,
+    mode: str = "r",
+    buffering: int = -1,
+    encoding: str | None = None,
+    errors: str | None = None,
+    newline: str | None = None,
+) -> Any:
+    """Patched socket.socket.makefile returning AsyncSocketIO-backed stream."""
+    is_binary = "b" in mode
+    raw_mode = mode
+    if not is_binary and "t" not in mode:
+        raw_mode = mode + "b" if "+" not in mode else mode.replace("+", "b+")
+
+    raw = AsyncSocketIO(self, raw_mode)
+
+    if is_binary:
+        if buffering == 0:
+            return raw
+        elif "w" in mode or "a" in mode or "+" in mode:
+            if "r" in mode or "+" in mode:
+                return AsyncBufferedRandom(
+                    raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
+                )
+            return AsyncBufferedWriter(
+                raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
+            )
+        else:
+            return AsyncBufferedReader(
+                raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
+            )
+
+    if buffering == 0:
+        raise ValueError("can't have unbuffered text I/O")
+
+    buffer_stream: Any
+    if "w" in mode or "a" in mode or "+" in mode:
+        if "r" in mode or "+" in mode:
+            buffer_stream = AsyncBufferedRandom(
+                raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
+            )
+        else:
+            buffer_stream = AsyncBufferedWriter(
+                raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
+            )
+    else:
+        buffer_stream = AsyncBufferedReader(
+            raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
+        )
+
+    return AsyncTextIOWrapper(
+        buffer_stream,
+        encoding=encoding,
+        errors=errors,
+        newline=newline,
+    )
+
+
 def patch_python_io() -> None:
     if hasattr(builtins, "_orig_open"):
         return
@@ -320,6 +430,12 @@ def patch_python_io() -> None:
     builtins.open = patched_open
     io.open = patched_open
 
+    import socket
+
+    if hasattr(socket.socket, "makefile"):
+        socket.socket._orig_makefile = socket.socket.makefile  # type: ignore[attr-defined]
+        socket.socket.makefile = patched_socket_makefile  # type: ignore[assignment]
+
 
 patch_python_io()
 
@@ -331,6 +447,7 @@ __all__ = [
     "AsyncIOBase",
     "AsyncIOBaseMeta",
     "AsyncIOStream",
+    "AsyncSocketIO",
     "AsyncTextIOWrapper",
     "DefaultFileIO",
     "FallbackFileIO",
