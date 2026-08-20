@@ -8,18 +8,25 @@ version = "0.1.0"
 description = "Native-first cross-platform asynchronous kernel I/O for Python"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["pyo3-asyncio>=0.20.0"]
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
+    "maturin>=1.5.0",
     "ruff>=0.3.0",
     "mypy>=1.9.0",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
 ]
 
-[tool.uv]
-dev-dependencies = ["py-native-io[dev]"]
+[dependency-groups]
+dev = [
+    "maturin>=1.5.0",
+    "ruff>=0.3.0",
+    "mypy>=1.9.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
 
 [tool.maturin]
 module-name = "py_native_io._ext"

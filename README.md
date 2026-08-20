@@ -7,19 +7,22 @@ Native-first asynchronous kernel I/O for Python targeting **`io_uring`** (Linux)
 
 ## **1. Core Concepts & Architecture**
 
-### **Unified Stream Contract (`AsyncIOBase`)**
-`py-native-io` introduces `AsyncIOBase` (inheriting from `io.IOBase`), which bridges synchronous and asynchronous stream APIs on a single stream object.
+### **Unified Stream Contract (`AsyncIOBase` & `AsyncIOStream`)**
+`py-native-io` introduces `AsyncIOBase` (inheriting from `io.IOBase`), which bridges synchronous and asynchronous stream APIs on a single stream object. It also provides the `@runtime_checkable` `AsyncIOStream` protocol for static type checking in `mypy`.
 
 ```python
 import py_native_io
+from py_native_io import AsyncIOStream
+
 
 async def main():
-    # Opens native io_uring / Windows IoRing stream
+    # Opens native io_uring / Windows IoRing stream (satisfies AsyncIOStream and io.IOBase)
     f = open("data.bin", "rb")
-    
+    assert isinstance(f, AsyncIOStream)
+
     # Non-blocking kernel ring read
     chunk_a = await f.aread(1024)
-    
+
     # Synchronous read on the same stream object
     chunk_b = f.read(512)
     f.close()
