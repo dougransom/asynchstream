@@ -1,0 +1,4 @@
+{
+  "name": "KernelRingProbe",
+  "instructions": "Probe OS runtime capabilities for io_uring, Windows IoRing, or kqueue."
+}

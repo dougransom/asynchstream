@@ -1,0 +1,9 @@
+{
+  "name": "UvToolchain",
+  "commands": [
+    "uv run maturin develop",
+    "uv run ruff check",
+    "uv run mypy py_native_io",
+    "uv run pytest"
+  ]
+}
