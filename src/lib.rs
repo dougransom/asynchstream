@@ -265,6 +265,40 @@ impl NativeFileIO {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn parse_kernel_version(release: &str) -> Option<(u32, u32)> {
+    let mut parts = release.trim().split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor_str = parts.next()?;
+    let minor_num_str: String = minor_str.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let minor = minor_num_str.parse::<u32>().ok()?;
+    Some((major, minor))
+}
+
+#[cfg(target_os = "linux")]
+fn is_linux_uring_secure_and_supported() -> bool {
+    if let Ok(release) = std::fs::read_to_string("/proc/sys/kernel/osrelease") {
+        if let Some((major, minor)) = parse_kernel_version(&release) {
+            if major < 5 || (major == 5 && minor < 10) {
+                return false;
+            }
+        }
+    }
+
+    let ring = match io_uring::IoUring::new(1) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+
+    let mut probe = io_uring::Probe::new();
+    if ring.submitter().register_probe(&mut probe).is_err() {
+        return false;
+    }
+
+    probe.is_supported(io_uring::opcode::Read::CODE)
+        && probe.is_supported(io_uring::opcode::Write::CODE)
+}
+
 #[pyfunction]
 fn is_kernel_ring_supported() -> bool {
     if std::env::var("PY_NATIVE_IO_FORCE_LEGACY").is_ok() {
@@ -272,7 +306,7 @@ fn is_kernel_ring_supported() -> bool {
     }
     #[cfg(target_os = "linux")]
     {
-        io_uring::IoUring::new(1).is_ok()
+        is_linux_uring_secure_and_supported()
     }
     #[cfg(target_os = "windows")]
     {
