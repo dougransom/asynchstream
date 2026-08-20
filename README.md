@@ -45,7 +45,20 @@ The `AsyncIOBaseMeta` metaclass enforces dynamic method target resolution using 
 
 ---
 
-## **3. Developer Toolchain (`uv` + `maturin`)**
+## **3. Security & Kernel Version Gating (Linux >= 5.10 LTS)**
+
+To protect applications against privilege escalation and kernel memory corruption vulnerabilities, `py-native-io` enforces a strict minimum **Linux Kernel 5.10 LTS** requirement for native `io_uring` execution:
+
+* **Why Linux >= 5.10 LTS?**
+  Early `io_uring` implementations in Linux kernels 5.1 through 5.9 contained severe security vulnerabilities and use-after-free flaws (*e.g., CVE-2021-3491, CVE-2022-2602*). Kernel 5.10 LTS stabilized `io_uring` security boundaries, capability checks, and memory pinning.
+* **Hardware/Kernel Opcode Probing (`IORING_REGISTER_PROBE`):**
+  During engine detection, `py-native-io` registers an `io_uring::Probe` to verify that the host kernel and container environment (such as Docker/Kubernetes `seccomp` filters) actively allow `IORING_OP_READ` and `IORING_OP_WRITE` opcodes.
+* **Graceful Thread-Pool Fallback:**
+  If the host kernel is `< 5.10` or container security policies restrict `io_uring`, `is_kernel_ring_supported()` returns `False`, transparently falling back to secure thread-pool execution (`FallbackFileIO`).
+
+---
+
+## **4. Developer Toolchain (`uv` + `maturin`)**
 
 Build, lint, type-check, and test the repository using `uv`:
 
