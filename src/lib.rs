@@ -133,7 +133,16 @@ impl NativeFileIO {
         let s = size.unwrap_or(-1);
         future_into_py(py, async move {
             let buf = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
-                let mut f = File::open(&path)?;
+                let f = File::open(&path)?;
+                let read_size = if s < 0 { 65536 } else { s as usize };
+                #[cfg(target_os = "linux")]
+                {
+                    use std::os::unix::io::AsRawFd;
+                    if let Ok(res) = submit_uring_read(f.as_raw_fd(), read_size) {
+                        return Ok(res);
+                    }
+                }
+                let mut f = f;
                 let mut buf = Vec::new();
                 if s < 0 {
                     f.read_to_end(&mut buf)?;
@@ -163,7 +172,15 @@ impl NativeFileIO {
         let path = self.path.clone();
         future_into_py(py, async move {
             let len = tokio::task::spawn_blocking(move || -> std::io::Result<usize> {
-                let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
+                let f = OpenOptions::new().create(true).append(true).open(&path)?;
+                #[cfg(target_os = "linux")]
+                {
+                    use std::os::unix::io::AsRawFd;
+                    if let Ok(written) = submit_uring_write(f.as_raw_fd(), &bytes) {
+                        return Ok(written);
+                    }
+                }
+                let mut f = f;
                 f.write_all(&bytes)?;
                 Ok(bytes.len())
             })
@@ -276,4 +293,66 @@ fn _ext(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(is_kernel_ring_supported, m)?)?;
     m.add_class::<NativeFileIO>()?;
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn submit_uring_read(fd: std::os::unix::io::RawFd, size: usize) -> std::io::Result<Vec<u8>> {
+    use io_uring::{opcode, types, IoUring};
+
+    let mut ring = IoUring::new(8)?;
+    let mut buf = vec![0u8; size];
+    let read_e = opcode::Read::new(types::Fd(fd), buf.as_mut_ptr(), size as u32)
+        .offset(0)
+        .build()
+        .user_data(0x01);
+
+    unsafe {
+        ring.submission()
+            .push(&read_e)
+            .map_err(|_| std::io::Error::other("SQ queue full"))?;
+    }
+
+    ring.submit_and_wait(1)?;
+
+    let cqe = ring
+        .completion()
+        .next()
+        .ok_or_else(|| std::io::Error::other("No CQE"))?;
+
+    let ret = cqe.result();
+    if ret < 0 {
+        return Err(std::io::Error::from_raw_os_error(-ret));
+    }
+    buf.truncate(ret as usize);
+    Ok(buf)
+}
+
+#[cfg(target_os = "linux")]
+fn submit_uring_write(fd: std::os::unix::io::RawFd, bytes: &[u8]) -> std::io::Result<usize> {
+    use io_uring::{opcode, types, IoUring};
+
+    let mut ring = IoUring::new(8)?;
+    let write_e = opcode::Write::new(types::Fd(fd), bytes.as_ptr(), bytes.len() as u32)
+        .offset(u64::MAX)
+        .build()
+        .user_data(0x02);
+
+    unsafe {
+        ring.submission()
+            .push(&write_e)
+            .map_err(|_| std::io::Error::other("SQ queue full"))?;
+    }
+
+    ring.submit_and_wait(1)?;
+
+    let cqe = ring
+        .completion()
+        .next()
+        .ok_or_else(|| std::io::Error::other("No CQE"))?;
+
+    let ret = cqe.result();
+    if ret < 0 {
+        return Err(std::io::Error::from_raw_os_error(-ret));
+    }
+    Ok(ret as usize)
 }
