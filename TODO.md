@@ -25,10 +25,10 @@ This document tracks completed features and planned platform engine implementati
 - [ ] Network Ring Accept & Connect (`IORING_OP_ACCEPT`, `IORING_OP_CONNECT`)
 
 ### 🪟 Windows (`IoRing` & IOCP)
-- [ ] Windows `IoRing` FFI bindings via `windows-sys` (`CreateIoRing`, `SubmitIoRing`)
-- [ ] File I/O Operations (`BuildIoRingReadFile`, `BuildIoRingWriteFile`)
+- [x] Windows `IoRing` FFI bindings via `windows-sys` (`CreateIoRing`, `SubmitIoRing`)
+- [x] File I/O Operations (`submit_ioring_read`, `submit_ioring_write`)
+- [x] Legacy Windows Fallback (Thread-pool engine when `CreateIoRing` unavailable)
 - [ ] Pre-registered Fixed Buffer Tables (`BuildIoRingRegisterBuffers`)
-- [ ] Legacy Windows Fallback (`GetQueuedCompletionStatus` / IOCP thread-pool)
 
 ### 🍎 macOS & Apple Platforms (`kqueue`)
 - [ ] `kqueue` Event Filter Bindings (`EVFILT_READ`, `EVFILT_WRITE`) for Darwin / macOS
