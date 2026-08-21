@@ -90,6 +90,7 @@ uv run python examples/03_socket_stream_makefile.py     # Async socket streams v
 uv run python examples/04_zero_copy_kernel_splice.py    # Zero-copy kernel buffer transfer via asplice()
 uv run python examples/05_in_memory_async_bytes_io.py   # In-memory AsyncBytesIO & AsyncStringIO
 uv run python examples/06_systemwide_io_patching.py     # Systemwide open(), io.FileIO, io.StringIO replacement
+uv run python examples/07_scale_5000_files_benchmark.py # Scalability & performance benchmark across 5,000 files
 ```
 
 ---
