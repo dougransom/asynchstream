@@ -17,6 +17,7 @@ from py_native_io.file import (
     NativeFileIO,
     WindowsIoRingFileIO,
     _ext,
+    engine_info,
 )
 from py_native_io.memory import AsyncBytesIO, AsyncStringIO
 from py_native_io.patch import (
@@ -35,6 +36,13 @@ logger = logging.getLogger("py_native_io")
 
 # Automatically trigger systemwide io class and function patching on package import
 patch_python_io()
+
+logger.debug(
+    "py-native-io: engine initialized with DefaultFileIO='%s.%s' (%s)",
+    DefaultFileIO.__module__,
+    DefaultFileIO.__qualname__,
+    engine_info,
+)
 
 __all__ = [
     "AsyncBufferedRandom",
@@ -59,7 +67,6 @@ __all__ = [
     "ensure_async_stream",
     "get_async_stderr",
     "get_async_stdout",
-    "logger",
     "patch_python_io",
     "patch_stream",
     "patched_open",

@@ -1,5 +1,9 @@
 #[cfg(target_os = "linux")]
+use std::collections::HashMap;
+#[cfg(target_os = "linux")]
 use std::os::unix::io::RawFd;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "linux")]
 use std::sync::Mutex;
 
@@ -22,8 +26,17 @@ impl RingOpcode {
 }
 
 #[cfg(target_os = "linux")]
+static NEXT_USER_DATA: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(target_os = "linux")]
+struct RingState {
+    ring: IoUring,
+    completed: HashMap<u64, i32>,
+}
+
+#[cfg(target_os = "linux")]
 thread_local! {
-    static THREAD_RING: Mutex<Option<IoUring>> = const { Mutex::new(None) };
+    static THREAD_RING: Mutex<Option<RingState>> = const { Mutex::new(None) };
 }
 
 /// Retrieve configured io_uring submission queue depth size.
@@ -44,18 +57,22 @@ fn get_configured_ring_size() -> u32 {
 
 /// Execute a closure with a persistent thread-local `io_uring` instance under a thread-local lock.
 #[cfg(target_os = "linux")]
-pub fn with_thread_ring<F, R>(f: F) -> std::io::Result<R>
+fn with_thread_ring_state<F, R>(f: F) -> std::io::Result<R>
 where
-    F: FnOnce(&mut IoUring) -> std::io::Result<R>,
+    F: FnOnce(&mut IoUring, &mut HashMap<u64, i32>) -> std::io::Result<R>,
 {
     THREAD_RING.with(|mutex| {
         let mut option = mutex.lock().map_err(|_| std::io::Error::other("Lock error"))?;
         if option.is_none() {
             let entries = get_configured_ring_size();
-            *option = Some(IoUring::new(entries)?);
+            let state = RingState {
+                ring: IoUring::new(entries)?,
+                completed: HashMap::new(),
+            };
+            *option = Some(state);
         }
-        let ring = option.as_mut().unwrap();
-        f(ring)
+        let state = option.as_mut().unwrap();
+        f(&mut state.ring, &mut state.completed)
     })
 }
 
@@ -94,22 +111,50 @@ pub fn is_linux_uring_secure_and_supported() -> bool {
         && probe.is_supported(io_uring::opcode::Write::CODE)
 }
 
+#[cfg(target_os = "linux")]
+fn poll_completion_for_id(
+    ring: &mut IoUring,
+    completed: &mut HashMap<u64, i32>,
+    my_id: u64,
+) -> std::io::Result<i32> {
+    loop {
+        if let Some(res) = completed.remove(&my_id) {
+            return Ok(res);
+        }
+
+        {
+            let cq = ring.completion();
+            for cqe in cq {
+                completed.insert(cqe.user_data(), cqe.result());
+            }
+        }
+
+        if let Some(res) = completed.remove(&my_id) {
+            return Ok(res);
+        }
+
+        ring.submit_and_wait(1)?;
+    }
+}
+
 /// Helper function to submit an IORING_OP_READ submission queue entry (SQE)
-/// using the persistent thread-local io_uring ring under atomic thread-local mutex lock.
+/// using the persistent thread-local io_uring ring with re-entrant user_data matching.
 #[cfg(target_os = "linux")]
 pub fn submit_uring_read(fd: RawFd, offset: u64, size: usize) -> std::io::Result<Vec<u8>> {
     use io_uring::{opcode, types};
 
-    with_thread_ring(|ring| {
-        let mut buf = vec![0u8; size];
+    let my_id = NEXT_USER_DATA.fetch_add(1, Ordering::Relaxed);
+    let mut buf = vec![0u8; size];
+
+    with_thread_ring_state(|ring, _completed| {
         let read_e = opcode::Read::new(types::Fd(fd), buf.as_mut_ptr(), size as u32)
             .offset(offset)
             .build()
-            .user_data(RingOpcode::Read.user_data());
+            .user_data(my_id);
 
         unsafe {
             if ring.submission().push(&read_e).is_err() {
-                ring.submit()?;
+                ring.submit_and_wait(1)?;
                 ring.submission()
                     .push(&read_e)
                     .map_err(|_| std::io::Error::other("SQ queue full"))?;
@@ -117,43 +162,37 @@ pub fn submit_uring_read(fd: RawFd, offset: u64, size: usize) -> std::io::Result
         }
 
         ring.submit()?;
+        Ok(())
+    })?;
 
-        let cqe = {
-            let maybe_cqe = ring.completion().next();
-            if let Some(cqe) = maybe_cqe {
-                cqe
-            } else {
-                ring.submit_and_wait(1)?;
-                ring.completion()
-                    .next()
-                    .ok_or_else(|| std::io::Error::other("No CQE"))?
-            }
-        };
+    let ret = with_thread_ring_state(|ring, completed| {
+        poll_completion_for_id(ring, completed, my_id)
+    })?;
 
-        let ret = cqe.result();
-        if ret < 0 {
-            return Err(std::io::Error::from_raw_os_error(-ret));
-        }
-        buf.truncate(ret as usize);
-        Ok(buf)
-    })
+    if ret < 0 {
+        return Err(std::io::Error::from_raw_os_error(-ret));
+    }
+    buf.truncate(ret as usize);
+    Ok(buf)
 }
 
 /// Helper function to submit an IORING_OP_WRITE submission queue entry (SQE)
-/// using the persistent thread-local io_uring ring under atomic thread-local mutex lock.
+/// using the persistent thread-local io_uring ring with re-entrant user_data matching.
 #[cfg(target_os = "linux")]
 pub fn submit_uring_write(fd: RawFd, bytes: &[u8]) -> std::io::Result<usize> {
     use io_uring::{opcode, types};
 
-    with_thread_ring(|ring| {
+    let my_id = NEXT_USER_DATA.fetch_add(1, Ordering::Relaxed);
+
+    with_thread_ring_state(|ring, _completed| {
         let write_e = opcode::Write::new(types::Fd(fd), bytes.as_ptr(), bytes.len() as u32)
             .offset(u64::MAX)
             .build()
-            .user_data(RingOpcode::Write.user_data());
+            .user_data(my_id);
 
         unsafe {
             if ring.submission().push(&write_e).is_err() {
-                ring.submit()?;
+                ring.submit_and_wait(1)?;
                 ring.submission()
                     .push(&write_e)
                     .map_err(|_| std::io::Error::other("SQ queue full"))?;
@@ -161,25 +200,17 @@ pub fn submit_uring_write(fd: RawFd, bytes: &[u8]) -> std::io::Result<usize> {
         }
 
         ring.submit()?;
+        Ok(())
+    })?;
 
-        let cqe = {
-            let maybe_cqe = ring.completion().next();
-            if let Some(cqe) = maybe_cqe {
-                cqe
-            } else {
-                ring.submit_and_wait(1)?;
-                ring.completion()
-                    .next()
-                    .ok_or_else(|| std::io::Error::other("No CQE"))?
-            }
-        };
+    let ret = with_thread_ring_state(|ring, completed| {
+        poll_completion_for_id(ring, completed, my_id)
+    })?;
 
-        let ret = cqe.result();
-        if ret < 0 {
-            return Err(std::io::Error::from_raw_os_error(-ret));
-        }
-        Ok(ret as usize)
-    })
+    if ret < 0 {
+        return Err(std::io::Error::from_raw_os_error(-ret));
+    }
+    Ok(ret as usize)
 }
 
 /// Helper function to submit an IORING_OP_SPLICE submission queue entry (SQE)
@@ -192,7 +223,9 @@ pub fn submit_uring_splice(
 ) -> std::io::Result<usize> {
     use io_uring::{opcode, types};
 
-    with_thread_ring(|ring| {
+    let my_id = NEXT_USER_DATA.fetch_add(1, Ordering::Relaxed);
+
+    with_thread_ring_state(|ring, _completed| {
         let splice_e = opcode::Splice::new(
             types::Fd(fd_in),
             -1i64,
@@ -201,7 +234,7 @@ pub fn submit_uring_splice(
             size as u32,
         )
         .build()
-        .user_data(RingOpcode::Splice.user_data());
+        .user_data(my_id);
 
         unsafe {
             if ring.submission().push(&splice_e).is_err() {
@@ -212,17 +245,16 @@ pub fn submit_uring_splice(
             }
         }
 
-        ring.submit_and_wait(1)?;
+        ring.submit()?;
+        Ok(())
+    })?;
 
-        let cqe = ring
-            .completion()
-            .next()
-            .ok_or_else(|| std::io::Error::other("No CQE"))?;
+    let ret = with_thread_ring_state(|ring, completed| {
+        poll_completion_for_id(ring, completed, my_id)
+    })?;
 
-        let ret = cqe.result();
-        if ret < 0 {
-            return Err(std::io::Error::from_raw_os_error(-ret));
-        }
-        Ok(ret as usize)
-    })
+    if ret < 0 {
+        return Err(std::io::Error::from_raw_os_error(-ret));
+    }
+    Ok(ret as usize)
 }

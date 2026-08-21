@@ -135,4 +135,11 @@ class AsyncIOBase(io.IOBase, metaclass=AsyncIOBaseMeta):
         return asyncio.run(self.aread(size))
 
     def write(self, b: bytes) -> int:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            msg = "Cannot call sync write() inside an active event loop. Use 'await awrite()'."
+            raise RuntimeError(msg)
         return asyncio.run(self.awrite(b))

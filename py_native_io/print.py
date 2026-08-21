@@ -46,21 +46,16 @@ async def aprint(
 
     target_file = sys.stdout if file is None else file
 
-    if target_file is sys.__stdout__ or target_file is sys.__stderr__:
-        target = get_async_stdout() if target_file is sys.__stdout__ else get_async_stderr()
-        await target.awrite(encoded_bytes)
-        if flush:
-            await target.aflush()
-    elif hasattr(target_file, "awrite"):
+    if hasattr(target_file, "awrite"):
         try:
             await target_file.awrite(encoded_bytes)
         except (TypeError, ValueError):
             await target_file.awrite(output)
         if flush and hasattr(target_file, "aflush"):
             await target_file.aflush()
-        elif flush and hasattr(target_file, "flush"):
+        elif hasattr(target_file, "flush"):
             target_file.flush()
     elif hasattr(target_file, "write"):
         target_file.write(output)
-        if flush and hasattr(target_file, "flush"):
+        if hasattr(target_file, "flush"):
             target_file.flush()

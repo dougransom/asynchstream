@@ -2,6 +2,7 @@ import asyncio
 import builtins
 import contextlib
 import io
+import logging
 import os
 import types
 from collections.abc import Callable
@@ -17,6 +18,8 @@ from py_native_io.buffered import (
 from py_native_io.file import DefaultFileIO, create_default_file_io
 from py_native_io.memory import AsyncBytesIO, AsyncStringIO
 from py_native_io.socket import AsyncSocketIO
+
+logger = logging.getLogger("py_native_io")
 
 
 def patched_open(
@@ -50,46 +53,59 @@ def patched_open(
 
     raw = create_default_file_io(file, raw_mode, closefd=closefd, opener=opener)
 
+    res_stream: Any
     if is_binary:
         if buffering == 0:
-            return raw
+            res_stream = raw
         elif "w" in mode or "a" in mode or "+" in mode:
             if "r" in mode or "+" in mode:
-                return AsyncBufferedRandom(
+                res_stream = AsyncBufferedRandom(
                     raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
                 )
-            return AsyncBufferedWriter(
-                raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
-            )
+            else:
+                res_stream = AsyncBufferedWriter(
+                    raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
+                )
         else:
-            return AsyncBufferedReader(
-                raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
-            )
-
-    if buffering == 0:
-        raise ValueError("can't have unbuffered text I/O")
-
-    buffer_stream: Any
-    if "w" in mode or "a" in mode or "+" in mode:
-        if "r" in mode or "+" in mode:
-            buffer_stream = AsyncBufferedRandom(
-                raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
-            )
-        else:
-            buffer_stream = AsyncBufferedWriter(
+            res_stream = AsyncBufferedReader(
                 raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
             )
     else:
-        buffer_stream = AsyncBufferedReader(
-            raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
+        if buffering == 0:
+            raise ValueError("can't have unbuffered text I/O")
+
+        buffer_stream: Any
+        if "w" in mode or "a" in mode or "+" in mode:
+            if "r" in mode or "+" in mode:
+                buffer_stream = AsyncBufferedRandom(
+                    raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
+                )
+            else:
+                buffer_stream = AsyncBufferedWriter(
+                    raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
+                )
+        else:
+            buffer_stream = AsyncBufferedReader(
+                raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
+            )
+
+        res_stream = AsyncTextIOWrapper(
+            buffer_stream,
+            encoding=encoding,
+            errors=errors,
+            newline=newline,
         )
 
-    return AsyncTextIOWrapper(
-        buffer_stream,
-        encoding=encoding,
-        errors=errors,
-        newline=newline,
+    logger.debug(
+        "py-native-io: open('%s', mode='%s') -> stream '%s.%s' (raw: '%s.%s')",
+        file,
+        mode,
+        res_stream.__class__.__module__,
+        res_stream.__class__.__qualname__,
+        raw.__class__.__module__,
+        raw.__class__.__qualname__,
     )
+    return res_stream
 
 
 def patched_socket_makefile(
@@ -108,17 +124,46 @@ def patched_socket_makefile(
 
     raw = AsyncSocketIO(self, raw_mode)
 
+    res_stream: Any
     if is_binary:
         if buffering == 0 or "+" in mode:
-            return raw
+            res_stream = raw
         elif "w" in mode or "a" in mode:
-            return AsyncBufferedWriter(
+            res_stream = AsyncBufferedWriter(
                 raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
             )
         else:
-            return AsyncBufferedReader(
+            res_stream = AsyncBufferedReader(
                 raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
             )
+    else:
+        if buffering == 0:
+            raise ValueError("can't have unbuffered text I/O")
+
+        buf_stream: Any
+        if "w" in mode or "a" in mode:
+            buf_stream = AsyncBufferedWriter(
+                raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
+            )
+        else:
+            buf_stream = AsyncBufferedReader(
+                raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
+            )
+
+        res_stream = AsyncTextIOWrapper(
+            buf_stream,
+            encoding=encoding,
+            errors=errors,
+            newline=newline,
+        )
+
+    logger.debug(
+        "py-native-io: socket.makefile(mode='%s') -> stream '%s.%s'",
+        mode,
+        res_stream.__class__.__module__,
+        res_stream.__class__.__qualname__,
+    )
+    return res_stream
 
     if buffering == 0:
         raise ValueError("can't have unbuffered text I/O")

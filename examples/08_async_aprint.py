@@ -1,11 +1,14 @@
 """Example 08: Asynchronous Non-Blocking Printing with aprint."""
 
 import asyncio
+import logging
 import os
 import tempfile
 
-import py_native_io  # noqa: F401
-from py_native_io import aprint
+logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(name)s:%(message)s")
+
+import py_native_io  # noqa: E402, F401
+from py_native_io import aprint  # noqa: E402
 
 
 async def main() -> None:

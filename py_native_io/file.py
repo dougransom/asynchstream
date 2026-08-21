@@ -134,8 +134,9 @@ else:
     engine_info = "Cross-platform thread-pool fallback engine"
 
 logger.debug(
-    "py-native-io: selected DefaultFileIO implementation '%s' (%s)",
-    DefaultFileIO.__name__,
+    "py-native-io: selected DefaultFileIO implementation '%s.%s' (%s)",
+    DefaultFileIO.__module__,
+    DefaultFileIO.__qualname__,
     engine_info,
 )
 
@@ -145,10 +146,24 @@ def create_default_file_io(
 ) -> Any:
     if use_native and (isinstance(file, (str, bytes)) or hasattr(file, "__fspath__")):
         try:
-            return DefaultFileIO(file, mode, closefd=closefd, opener=opener)
+            inst = DefaultFileIO(file, mode, closefd=closefd, opener=opener)
+            logger.debug(
+                "py-native-io: created native stream for '%s' using implementation '%s.%s'",
+                file,
+                inst.__class__.__module__,
+                inst.__class__.__qualname__,
+            )
+            return inst
         except Exception:
             pass
-    return FallbackFileIO(file, mode, closefd=closefd, opener=opener)
+    inst = FallbackFileIO(file, mode, closefd=closefd, opener=opener)
+    logger.debug(
+        "py-native-io: created fallback stream for '%s' using implementation '%s.%s'",
+        file,
+        inst.__class__.__module__,
+        inst.__class__.__qualname__,
+    )
+    return inst
 
 
 __all__ = [
@@ -160,5 +175,6 @@ __all__ = [
     "WindowsIoRingFileIO",
     "_ext",
     "create_default_file_io",
+    "engine_info",
     "use_native",
 ]

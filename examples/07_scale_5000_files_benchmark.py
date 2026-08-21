@@ -7,9 +7,9 @@ import shutil
 import tempfile
 import time
 
-import py_native_io  # noqa: F401
-
 logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(name)s:%(message)s")
+
+import py_native_io  # noqa: E402, F401
 
 NUM_FILES = 5000
 PAYLOAD = b"High-performance py-native-io kernel ring stream payload\n" * 10

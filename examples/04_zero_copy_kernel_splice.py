@@ -4,9 +4,9 @@ import asyncio
 import logging
 import tempfile
 
-import py_native_io  # noqa: F401
-
 logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(name)s:%(message)s")
+
+import py_native_io  # noqa: E402, F401
 
 
 async def main() -> None:
