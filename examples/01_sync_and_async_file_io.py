@@ -1,4 +1,4 @@
-"""Example 01: OS Syscall Sync vs CPython Built-in Sync vs Async Pipelined Queue Benchmarking."""
+"""Example 01: OS Syscall Sync vs CPython Built-in Sync vs Async Batch Benchmark."""
 
 import asyncio
 import builtins
@@ -70,10 +70,10 @@ def run_builtin_sync_benchmark(
     return t_builtin_write_total, t_builtin_read_total, builtin_reads
 
 
-async def run_async_benchmark(
+async def run_async_pipelined_benchmark(
     async_filename: str, payload: bytes
 ) -> tuple[float, float, list[int], list[bytes]]:
-    """Perform asynchronous pipelined file I/O operations via io_uring submission batching."""
+    """Perform asynchronous pipelined file I/O operations via awrite/aread + asyncio.gather."""
     f_async = open(async_filename, "w+b")  # noqa: SIM115
 
     # Warmup run to initialize persistent io_uring ring
@@ -81,7 +81,6 @@ async def run_async_benchmark(
     await f_async.aflush()
 
     # 1. Asynchronous Pipelined Writes
-    # Enqueue ALL BATCH_SIZE write tasks onto kernel submission queue concurrently
     t0 = time.perf_counter()
     write_tasks = [f_async.awrite(payload) for _ in range(BATCH_SIZE)]
     write_results = list(await asyncio.gather(*write_tasks))
@@ -89,7 +88,6 @@ async def run_async_benchmark(
     t_async_write_total = (time.perf_counter() - t0) * 1000
 
     # 2. Asynchronous Pipelined Reads
-    # Enqueue ALL BATCH_SIZE read tasks onto kernel submission queue concurrently
     f_async.seek(0)
     t0 = time.perf_counter()
     read_tasks = [f_async.aread(len(payload)) for _ in range(BATCH_SIZE)]
@@ -106,9 +104,41 @@ async def run_async_benchmark(
     )
 
 
+async def run_async_batch_api_benchmark(
+    batch_filename: str, payload: bytes
+) -> tuple[float, float, list[int], list[bytes]]:
+    """Perform asynchronous file I/O operations via io_uring batch API."""
+    f_async = open(batch_filename, "w+b")  # noqa: SIM115
+
+    # Warmup run to initialize persistent io_uring ring
+    await f_async.awrite(payload)
+    await f_async.aflush()
+
+    # 1. Asynchronous Single-Syscall Batch Writes
+    t0 = time.perf_counter()
+    write_results = await f_async.awrite_batch([payload] * BATCH_SIZE)
+    await f_async.aflush()
+    t_batch_write_total = (time.perf_counter() - t0) * 1000
+
+    # 2. Asynchronous Single-Syscall Batch Reads
+    f_async.seek(0)
+    t0 = time.perf_counter()
+    async_batch_reads = await f_async.aread_batch([len(payload)] * BATCH_SIZE)
+    t_batch_read_total = (time.perf_counter() - t0) * 1000
+
+    f_async.close()
+
+    return (
+        t_batch_write_total,
+        t_batch_read_total,
+        write_results,
+        async_batch_reads,
+    )
+
+
 async def main() -> None:
     print(
-        f"=== Example 01: OS Syscall Sync vs CPython Built-in Sync vs Async Pipelined Benchmark "
+        f"=== Example 01: OS Sync vs Built-in Sync vs Async Pipelined vs Async Batch Benchmark "
         f"({BATCH_SIZE} operations) ==="
     )
 
@@ -123,6 +153,9 @@ async def main() -> None:
     with tempfile.NamedTemporaryFile("w+b", delete=False) as async_tmp:
         async_filename = async_tmp.name
 
+    with tempfile.NamedTemporaryFile("w+b", delete=False) as batch_tmp:
+        batch_filename = batch_tmp.name
+
     # 1. Run OS Syscall Synchronous Baseline
     t_os_w, t_os_r, os_sync_reads = run_os_sync_benchmark(os_sync_filename, payload)
 
@@ -131,17 +164,29 @@ async def main() -> None:
         builtin_sync_filename, payload
     )
 
-    # 3. Run Asynchronous Pipelined Benchmark
-    t_async_w, t_async_r, write_results, async_reads = await run_async_benchmark(
+    # 3. Run Asynchronous Pipelined Benchmark (awrite / aread)
+    t_async_w, t_async_r, write_results, async_reads = await run_async_pipelined_benchmark(
         async_filename, payload
     )
 
-    assert len(os_sync_reads) == len(builtin_sync_reads) == len(async_reads) == BATCH_SIZE
-    assert len(write_results) == BATCH_SIZE
+    # 4. Run Asynchronous Batch API Benchmark (awrite_batch / aread_batch)
+    t_batch_w, t_batch_r, batch_write_results, batch_reads = await run_async_batch_api_benchmark(
+        batch_filename, payload
+    )
+
+    assert (
+        len(os_sync_reads)
+        == len(builtin_sync_reads)
+        == len(async_reads)
+        == len(batch_reads)
+        == BATCH_SIZE
+    )
+    assert len(write_results) == len(batch_write_results) == BATCH_SIZE
 
     print(f"OS Syscall Sync File:      {os_sync_filename}")
     print(f"CPython Built-in File:     {builtin_sync_filename}")
-    print(f"Async Pipelined Ring File:  {async_filename}\n")
+    print(f"Async Pipelined File:      {async_filename}")
+    print(f"Async Batch Ring File:     {batch_filename}\n")
 
     print(
         f"OS Syscall Sync {BATCH_SIZE} Writes Total:       {t_os_w:.3f} ms "
@@ -152,8 +197,12 @@ async def main() -> None:
         f"({t_builtin_w / BATCH_SIZE:.3f} ms/op)"
     )
     print(
-        f"Asynchronous Pipelined {BATCH_SIZE} Writes Total: {t_async_w:.3f} ms "
+        f"Async Pipelined {BATCH_SIZE} Writes Total:       {t_async_w:.3f} ms "
         f"({t_async_w / BATCH_SIZE:.3f} ms/op)"
+    )
+    print(
+        f"Async Single-Syscall Batch Writes Total: {t_batch_w:.3f} ms "
+        f"({t_batch_w / BATCH_SIZE:.3f} ms/op)"
     )
 
     print(
@@ -165,17 +214,21 @@ async def main() -> None:
         f"({t_builtin_r / BATCH_SIZE:.3f} ms/op)"
     )
     print(
-        f"Asynchronous Pipelined {BATCH_SIZE} Reads Total:  {t_async_r:.3f} ms "
+        f"Async Pipelined {BATCH_SIZE} Reads Total:        {t_async_r:.3f} ms "
         f"({t_async_r / BATCH_SIZE:.3f} ms/op)"
     )
+    print(
+        f"Async Single-Syscall Batch Reads Total:  {t_batch_r:.3f} ms "
+        f"({t_batch_r / BATCH_SIZE:.3f} ms/op)"
+    )
 
-    w_speedup_builtin = ((t_builtin_w - t_async_w) / t_builtin_w) * 100
-    r_speedup_builtin = ((t_builtin_r - t_async_r) / t_builtin_r) * 100
+    w_speedup_batch = ((t_builtin_w - t_batch_w) / t_builtin_w) * 100
+    r_speedup_batch = ((t_builtin_r - t_batch_r) / t_builtin_r) * 100
 
-    # Asynchronously gather the final 3 benchmark result prints using aprint
+    # Asynchronously gather the final benchmark result prints using aprint
     await asyncio.gather(
-        aprint(f"\nAsync vs Built-in Sync Write Speedup: {w_speedup_builtin:+.1f}%"),
-        aprint(f"Async vs Built-in Sync Read Speedup:  {r_speedup_builtin:+.1f}%"),
+        aprint(f"\nAsync Batch vs Built-in Sync Write Speedup: {w_speedup_batch:+.1f}%"),
+        aprint(f"Async Batch vs Built-in Sync Read Speedup:  {r_speedup_batch:+.1f}%"),
         aprint("Success: All batch benchmark operations completed successfully!\n"),
     )
 

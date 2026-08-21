@@ -255,6 +255,159 @@ impl NativeFileIO {
         })
     }
 
+    /// Asynchronously read a batch of sizes or (offset, size) tuples using native kernel ring completion.
+    fn aread_batch<'p>(&self, py: Python<'p>, specs: &PyAny) -> PyResult<&'p PyAny> {
+        let read_specs: Vec<(u64, usize)> = if let Ok(sizes) = specs.extract::<Vec<usize>>() {
+            sizes.into_iter().map(|sz| (u64::MAX, sz)).collect()
+        } else if let Ok(tuples) = specs.extract::<Vec<(u64, usize)>>() {
+            tuples
+        } else {
+            return Err(PyTypeError::new_err(
+                "expected list of int sizes or (offset, size) tuples",
+            ));
+        };
+
+        let path = self.path.clone();
+        let raw_fd = {
+            let guard = self
+                .file
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("Lock error"))?;
+            let f = guard
+                .as_ref()
+                .ok_or_else(|| PyIOError::new_err("I/O operation on closed file."))?;
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::unix::io::AsRawFd;
+                f.as_raw_fd()
+            }
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::io::AsRawHandle;
+                f.as_raw_handle() as usize
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+            {
+                0
+            }
+        };
+
+        future_into_py(py, async move {
+            #[cfg(target_os = "linux")]
+            {
+                if let Ok(buffers) = engines::linux::submit_uring_read_batch(raw_fd, &read_specs) {
+                    let py_list = Python::with_gil(|py| {
+                        let list: Vec<PyObject> = buffers
+                            .iter()
+                            .map(|b| PyBytes::new(py, b).to_object(py))
+                            .collect();
+                        list.to_object(py)
+                    });
+                    return Ok(py_list);
+                }
+            }
+
+            let buffers = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<Vec<u8>>> {
+                let mut f = File::open(&path)?;
+                let mut res = Vec::with_capacity(read_specs.len());
+                for (offset, sz) in read_specs {
+                    if offset != u64::MAX {
+                        use std::io::Seek;
+                        f.seek(std::io::SeekFrom::Start(offset))?;
+                    }
+                    let mut buf = vec![0u8; sz];
+                    let n = f.read(&mut buf)?;
+                    buf.truncate(n);
+                    res.push(buf);
+                }
+                Ok(res)
+            })
+            .await
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+            let py_list = Python::with_gil(|py| {
+                let list: Vec<PyObject> = buffers
+                    .iter()
+                    .map(|b| PyBytes::new(py, b).to_object(py))
+                    .collect();
+                list.to_object(py)
+            });
+            Ok(py_list)
+        })
+    }
+
+    /// Asynchronously write a batch of byte buffers using native kernel ring completion.
+    fn awrite_batch<'p>(&self, py: Python<'p>, chunks: &PyAny) -> PyResult<&'p PyAny> {
+        let raw_chunks: Vec<Vec<u8>> = if let Ok(v) = chunks.extract::<Vec<Vec<u8>>>() {
+            v
+        } else {
+            let list: Vec<&PyAny> = chunks.extract()?;
+            let mut result = Vec::with_capacity(list.len());
+            for item in list {
+                if let Ok(b) = item.extract::<Vec<u8>>() {
+                    result.push(b);
+                } else if let Ok(s) = item.extract::<&str>() {
+                    result.push(s.as_bytes().to_vec());
+                } else {
+                    return Err(PyTypeError::new_err(
+                        "expected bytes-like object or str in batch",
+                    ));
+                }
+            }
+            result
+        };
+
+        let path = self.path.clone();
+        let raw_fd = {
+            let guard = self
+                .file
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("Lock error"))?;
+            let f = guard
+                .as_ref()
+                .ok_or_else(|| PyIOError::new_err("I/O operation on closed file."))?;
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::unix::io::AsRawFd;
+                f.as_raw_fd()
+            }
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::io::AsRawHandle;
+                f.as_raw_handle() as usize
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+            {
+                0
+            }
+        };
+
+        future_into_py(py, async move {
+            #[cfg(target_os = "linux")]
+            {
+                if let Ok(results) = engines::linux::submit_uring_write_batch(raw_fd, &raw_chunks) {
+                    return Ok(results);
+                }
+            }
+
+            let results = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<usize>> {
+                let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
+                let mut res = Vec::with_capacity(raw_chunks.len());
+                for chunk in &raw_chunks {
+                    f.write_all(chunk)?;
+                    res.push(chunk.len());
+                }
+                Ok(res)
+            })
+            .await
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+
+            Ok(results)
+        })
+    }
+
     /// Synchronously close the underlying file descriptor.
     fn close(&self) -> PyResult<()> {
         let mut guard = self

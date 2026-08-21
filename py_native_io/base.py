@@ -42,6 +42,14 @@ class AsyncIOBaseMeta(ABCMeta):
             cls.aread = auto_aread  # type: ignore[attr-defined]
             synthesized.append("aread")
 
+        if "aread" in namespace and "aread_batch" not in namespace:
+
+            async def auto_aread_batch(self: Any, specs: list[Any]) -> list[bytes]:
+                return [await self.aread(sz if isinstance(sz, int) else sz[1]) for sz in specs]
+
+            cls.aread_batch = auto_aread_batch  # type: ignore[attr-defined]
+            synthesized.append("aread_batch")
+
         if "write" in namespace and "awrite" not in namespace:
             sync_write = namespace["write"]
 
@@ -50,6 +58,14 @@ class AsyncIOBaseMeta(ABCMeta):
 
             cls.awrite = auto_awrite  # type: ignore[attr-defined]
             synthesized.append("awrite")
+
+        if "awrite" in namespace and "awrite_batch" not in namespace:
+
+            async def auto_awrite_batch(self: Any, chunks: list[Any]) -> list[int]:
+                return [await self.awrite(chunk) for chunk in chunks]
+
+            cls.awrite_batch = auto_awrite_batch  # type: ignore[attr-defined]
+            synthesized.append("awrite_batch")
 
         if "close" in namespace and "aclose" not in namespace:
             sync_close = namespace["close"]
@@ -91,8 +107,22 @@ class AsyncIOBase(io.IOBase, metaclass=AsyncIOBaseMeta):
     async def aread(self, size: int = -1) -> bytes:
         return await asyncio.to_thread(self.read, size)
 
+    async def aread_batch(self, specs: list[Any]) -> list[bytes]:
+        ext_aread_batch = getattr(self, "_ext_aread_batch", None)
+        if callable(ext_aread_batch):
+            res: list[bytes] = await ext_aread_batch(specs)
+            return res
+        return [await self.aread(sz if isinstance(sz, int) else sz[1]) for sz in specs]
+
     async def awrite(self, b: bytes) -> int:
         return await asyncio.to_thread(self.write, b)
+
+    async def awrite_batch(self, chunks: list[Any]) -> list[int]:
+        ext_awrite_batch = getattr(self, "_ext_awrite_batch", None)
+        if callable(ext_awrite_batch):
+            res_w: list[int] = await ext_awrite_batch(chunks)
+            return res_w
+        return [await self.awrite(chunk) for chunk in chunks]
 
     async def aclose(self) -> None:
         await asyncio.to_thread(self.close)

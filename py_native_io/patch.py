@@ -274,11 +274,23 @@ class AsyncStreamAdapter(AsyncIOBase):
             return res_a
         return await asyncio.to_thread(self._inner_stream.read, size)
 
+    async def aread_batch(self, specs: list[Any]) -> list[bytes]:
+        if hasattr(self._inner_stream, "aread_batch"):
+            res_a: list[bytes] = await self._inner_stream.aread_batch(specs)
+            return res_a
+        return [await self.aread(sz if isinstance(sz, int) else sz[1]) for sz in specs]
+
     async def awrite(self, b: bytes) -> int:
         if hasattr(self._inner_stream, "awrite"):
             res_w: int = await self._inner_stream.awrite(b)
             return res_w
         return await asyncio.to_thread(self._inner_stream.write, b)
+
+    async def awrite_batch(self, chunks: list[Any]) -> list[int]:
+        if hasattr(self._inner_stream, "awrite_batch"):
+            res_w: list[int] = await self._inner_stream.awrite_batch(chunks)
+            return res_w
+        return [await self.awrite(chunk) for chunk in chunks]
 
     async def aclose(self) -> None:
         if hasattr(self._inner_stream, "aclose"):
@@ -316,6 +328,15 @@ def patch_stream(stream: Any) -> AsyncIOStream:
             cls.aread = _aread
         stream.aread = types.MethodType(_aread, stream)
 
+    if (hasattr(stream, "aread") or hasattr(stream, "read")) and not hasattr(stream, "aread_batch"):
+
+        async def _aread_batch(self: Any, specs: list[Any]) -> list[bytes]:
+            return [await self.aread(sz if isinstance(sz, int) else sz[1]) for sz in specs]
+
+        with contextlib.suppress(TypeError, AttributeError):
+            cls.aread_batch = _aread_batch
+        stream.aread_batch = types.MethodType(_aread_batch, stream)
+
     if hasattr(stream, "write") and not hasattr(stream, "awrite"):
 
         async def _awrite(self: Any, b: bytes) -> int:
@@ -324,6 +345,17 @@ def patch_stream(stream: Any) -> AsyncIOStream:
         with contextlib.suppress(TypeError, AttributeError):
             cls.awrite = _awrite
         stream.awrite = types.MethodType(_awrite, stream)
+
+    if (hasattr(stream, "awrite") or hasattr(stream, "write")) and not hasattr(
+        stream, "awrite_batch"
+    ):
+
+        async def _awrite_batch(self: Any, chunks: list[Any]) -> list[int]:
+            return [await self.awrite(chunk) for chunk in chunks]
+
+        with contextlib.suppress(TypeError, AttributeError):
+            cls.awrite_batch = _awrite_batch
+        stream.awrite_batch = types.MethodType(_awrite_batch, stream)
 
     if hasattr(stream, "close") and not hasattr(stream, "aclose"):
 

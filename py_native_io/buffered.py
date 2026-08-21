@@ -14,6 +14,13 @@ class AsyncBufferedReader(io.BufferedReader, AsyncIOBase):
             return res
         return await super().aread(size)
 
+    async def aread_batch(self, specs: list[Any]) -> list[bytes]:
+        """Asynchronously read a batch of sizes or (offset, size) tuples from raw stream."""
+        if hasattr(self.raw, "aread_batch"):
+            res: list[bytes] = await self.raw.aread_batch(specs)
+            return res
+        return await super().aread_batch(specs)
+
 
 class AsyncBufferedWriter(io.BufferedWriter, AsyncIOBase):
     """Buffered writer supporting AsyncIOBase contract."""
@@ -24,6 +31,13 @@ class AsyncBufferedWriter(io.BufferedWriter, AsyncIOBase):
             res: int = await self.raw.awrite(b)
             return res
         return await super().awrite(b)
+
+    async def awrite_batch(self, chunks: list[Any]) -> list[int]:
+        """Asynchronously write a batch of bytes/strings to raw stream."""
+        if hasattr(self.raw, "awrite_batch"):
+            res: list[int] = await self.raw.awrite_batch(chunks)
+            return res
+        return await super().awrite_batch(chunks)
 
 
 class AsyncBufferedRandom(io.BufferedRandom, AsyncIOBase):
@@ -36,12 +50,26 @@ class AsyncBufferedRandom(io.BufferedRandom, AsyncIOBase):
             return res
         return await super().aread(size)
 
+    async def aread_batch(self, specs: list[Any]) -> list[bytes]:
+        """Asynchronously read a batch of sizes or (offset, size) tuples from raw stream."""
+        if hasattr(self.raw, "aread_batch"):
+            res: list[bytes] = await self.raw.aread_batch(specs)
+            return res
+        return await super().aread_batch(specs)
+
     async def awrite(self, b: Any) -> int:
         """Asynchronously write bytes to underlying raw stream."""
         if hasattr(self.raw, "awrite"):
             res: int = await self.raw.awrite(b)
             return res
         return await super().awrite(b)
+
+    async def awrite_batch(self, chunks: list[Any]) -> list[int]:
+        """Asynchronously write a batch of bytes/strings to raw stream."""
+        if hasattr(self.raw, "awrite_batch"):
+            res: list[int] = await self.raw.awrite_batch(chunks)
+            return res
+        return await super().awrite_batch(chunks)
 
 
 class AsyncTextIOWrapper(io.TextIOWrapper, AsyncIOBase):  # type: ignore[misc]

@@ -133,6 +133,19 @@ fn poll_completion_for_id(
             return Ok(res);
         }
 
+        // Non-blocking submission and completion drain before entering blocking wait
+        let _ = ring.submit();
+        {
+            let cq = ring.completion();
+            for cqe in cq {
+                completed.insert(cqe.user_data(), cqe.result());
+            }
+        }
+
+        if let Some(res) = completed.remove(&my_id) {
+            return Ok(res);
+        }
+
         ring.submit_and_wait(1)?;
     }
 }
@@ -184,6 +197,60 @@ pub fn submit_uring_read(fd: RawFd, offset: u64, size: usize) -> std::io::Result
     Ok(buf)
 }
 
+/// Helper function to submit a batch of IORING_OP_READ SQEs in 1 single kernel submission call.
+#[cfg(target_os = "linux")]
+pub fn submit_uring_read_batch(
+    fd: RawFd,
+    read_specs: &[(u64, usize)],
+) -> std::io::Result<Vec<Vec<u8>>> {
+    use io_uring::{opcode, types};
+
+    if read_specs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let start_id = NEXT_USER_DATA.fetch_add(read_specs.len() as u64, Ordering::Relaxed);
+    let mut task_ids = Vec::with_capacity(read_specs.len());
+    let mut buffers: Vec<Vec<u8>> = read_specs.iter().map(|(_, sz)| vec![0u8; *sz]).collect();
+
+    with_thread_ring_state(|ring, _completed| {
+        for (i, (offset, sz)) in read_specs.iter().enumerate() {
+            let my_id = start_id + i as u64;
+            task_ids.push(my_id);
+
+            let read_e = opcode::Read::new(types::Fd(fd), buffers[i].as_mut_ptr(), *sz as u32)
+                .offset(*offset)
+                .build()
+                .user_data(my_id);
+
+            unsafe {
+                if ring.submission().push(&read_e).is_err() {
+                    ring.submit_and_wait(1)?;
+                    ring.submission()
+                        .push(&read_e)
+                        .map_err(|_| std::io::Error::other("SQ queue full"))?;
+                }
+            }
+        }
+
+        ring.submit_and_wait(task_ids.len())?;
+        Ok(())
+    })?;
+
+    for (i, my_id) in task_ids.into_iter().enumerate() {
+        let ret = with_thread_ring_state(|ring, completed| {
+            poll_completion_for_id(ring, completed, my_id)
+        })?;
+
+        if ret < 0 {
+            return Err(std::io::Error::from_raw_os_error(-ret));
+        }
+        buffers[i].truncate(ret as usize);
+    }
+
+    Ok(buffers)
+}
+
 /// Helper function to submit an IORING_OP_WRITE submission queue entry (SQE)
 /// using the persistent thread-local io_uring ring with deferred batch submission.
 #[cfg(target_os = "linux")]
@@ -218,6 +285,57 @@ pub fn submit_uring_write(fd: RawFd, bytes: &[u8]) -> std::io::Result<usize> {
         return Err(std::io::Error::from_raw_os_error(-ret));
     }
     Ok(ret as usize)
+}
+
+/// Helper function to submit a batch of IORING_OP_WRITE SQEs in 1 single kernel submission call.
+#[cfg(target_os = "linux")]
+pub fn submit_uring_write_batch(fd: RawFd, chunks: &[Vec<u8>]) -> std::io::Result<Vec<usize>> {
+    use io_uring::{opcode, types};
+
+    if chunks.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let start_id = NEXT_USER_DATA.fetch_add(chunks.len() as u64, Ordering::Relaxed);
+    let mut task_ids = Vec::with_capacity(chunks.len());
+
+    with_thread_ring_state(|ring, _completed| {
+        for (i, chunk) in chunks.iter().enumerate() {
+            let my_id = start_id + i as u64;
+            task_ids.push(my_id);
+
+            let write_e = opcode::Write::new(types::Fd(fd), chunk.as_ptr(), chunk.len() as u32)
+                .offset(u64::MAX)
+                .build()
+                .user_data(my_id);
+
+            unsafe {
+                if ring.submission().push(&write_e).is_err() {
+                    ring.submit_and_wait(1)?;
+                    ring.submission()
+                        .push(&write_e)
+                        .map_err(|_| std::io::Error::other("SQ queue full"))?;
+                }
+            }
+        }
+
+        ring.submit_and_wait(task_ids.len())?;
+        Ok(())
+    })?;
+
+    let mut results = Vec::with_capacity(task_ids.len());
+    for my_id in task_ids {
+        let ret = with_thread_ring_state(|ring, completed| {
+            poll_completion_for_id(ring, completed, my_id)
+        })?;
+
+        if ret < 0 {
+            return Err(std::io::Error::from_raw_os_error(-ret));
+        }
+        results.push(ret as usize);
+    }
+
+    Ok(results)
 }
 
 /// Helper function to submit an IORING_OP_SPLICE submission queue entry (SQE)
