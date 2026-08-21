@@ -1,5 +1,10 @@
 #[cfg(target_os = "linux")]
+use std::cell::RefCell;
+#[cfg(target_os = "linux")]
 use std::os::unix::io::RawFd;
+
+#[cfg(target_os = "linux")]
+use io_uring::IoUring;
 
 /// Strongly typed io_uring opcode user data identifiers.
 #[repr(u64)]
@@ -14,6 +19,27 @@ impl RingOpcode {
     pub fn user_data(self) -> u64 {
         self as u64
     }
+}
+
+#[cfg(target_os = "linux")]
+thread_local! {
+    static THREAD_RING: RefCell<Option<IoUring>> = const { RefCell::new(None) };
+}
+
+/// Execute a closure with a persistent thread-local `io_uring` instance.
+#[cfg(target_os = "linux")]
+pub fn with_thread_ring<F, R>(f: F) -> std::io::Result<R>
+where
+    F: FnOnce(&mut IoUring) -> std::io::Result<R>,
+{
+    THREAD_RING.with(|cell| {
+        let mut option = cell.borrow_mut();
+        if option.is_none() {
+            *option = Some(IoUring::new(256)?);
+        }
+        let ring = option.as_mut().unwrap();
+        f(ring)
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -52,108 +78,111 @@ pub fn is_linux_uring_secure_and_supported() -> bool {
 }
 
 /// Helper function to submit an IORING_OP_READ submission queue entry (SQE)
-/// and await completion queue entry (CQE) response.
+/// using the persistent thread-local io_uring ring.
 #[cfg(target_os = "linux")]
 pub fn submit_uring_read(fd: RawFd, size: usize) -> std::io::Result<Vec<u8>> {
-    use io_uring::{opcode, types, IoUring};
+    use io_uring::{opcode, types};
 
-    let mut ring = IoUring::new(8)?;
-    let mut buf = vec![0u8; size];
-    let read_e = opcode::Read::new(types::Fd(fd), buf.as_mut_ptr(), size as u32)
-        .offset(0)
-        .build()
-        .user_data(RingOpcode::Read.user_data());
+    with_thread_ring(|ring| {
+        let mut buf = vec![0u8; size];
+        let read_e = opcode::Read::new(types::Fd(fd), buf.as_mut_ptr(), size as u32)
+            .offset(0)
+            .build()
+            .user_data(RingOpcode::Read.user_data());
 
-    unsafe {
-        ring.submission()
-            .push(&read_e)
-            .map_err(|_| std::io::Error::other("SQ queue full"))?;
-    }
+        unsafe {
+            ring.submission()
+                .push(&read_e)
+                .map_err(|_| std::io::Error::other("SQ queue full"))?;
+        }
 
-    ring.submit_and_wait(1)?;
+        ring.submit_and_wait(1)?;
 
-    let cqe = ring
-        .completion()
-        .next()
-        .ok_or_else(|| std::io::Error::other("No CQE"))?;
+        let cqe = ring
+            .completion()
+            .next()
+            .ok_or_else(|| std::io::Error::other("No CQE"))?;
 
-    let ret = cqe.result();
-    if ret < 0 {
-        return Err(std::io::Error::from_raw_os_error(-ret));
-    }
-    buf.truncate(ret as usize);
-    Ok(buf)
+        let ret = cqe.result();
+        if ret < 0 {
+            return Err(std::io::Error::from_raw_os_error(-ret));
+        }
+        buf.truncate(ret as usize);
+        Ok(buf)
+    })
 }
 
 /// Helper function to submit an IORING_OP_WRITE submission queue entry (SQE)
-/// and await completion queue entry (CQE) response.
+/// using the persistent thread-local io_uring ring.
 #[cfg(target_os = "linux")]
 pub fn submit_uring_write(fd: RawFd, bytes: &[u8]) -> std::io::Result<usize> {
-    use io_uring::{opcode, types, IoUring};
+    use io_uring::{opcode, types};
 
-    let mut ring = IoUring::new(8)?;
-    let write_e = opcode::Write::new(types::Fd(fd), bytes.as_ptr(), bytes.len() as u32)
-        .offset(u64::MAX)
-        .build()
-        .user_data(RingOpcode::Write.user_data());
+    with_thread_ring(|ring| {
+        let write_e = opcode::Write::new(types::Fd(fd), bytes.as_ptr(), bytes.len() as u32)
+            .offset(u64::MAX)
+            .build()
+            .user_data(RingOpcode::Write.user_data());
 
-    unsafe {
-        ring.submission()
-            .push(&write_e)
-            .map_err(|_| std::io::Error::other("SQ queue full"))?;
-    }
+        unsafe {
+            ring.submission()
+                .push(&write_e)
+                .map_err(|_| std::io::Error::other("SQ queue full"))?;
+        }
 
-    ring.submit_and_wait(1)?;
+        ring.submit_and_wait(1)?;
 
-    let cqe = ring
-        .completion()
-        .next()
-        .ok_or_else(|| std::io::Error::other("No CQE"))?;
+        let cqe = ring
+            .completion()
+            .next()
+            .ok_or_else(|| std::io::Error::other("No CQE"))?;
 
-    let ret = cqe.result();
-    if ret < 0 {
-        return Err(std::io::Error::from_raw_os_error(-ret));
-    }
-    Ok(ret as usize)
+        let ret = cqe.result();
+        if ret < 0 {
+            return Err(std::io::Error::from_raw_os_error(-ret));
+        }
+        Ok(ret as usize)
+    })
 }
 
 /// Helper function to submit an IORING_OP_SPLICE submission queue entry (SQE)
-/// to perform kernel zero-copy transfer between file descriptors.
+/// to perform kernel zero-copy transfer between file descriptors using thread-local ring.
 #[cfg(target_os = "linux")]
 pub fn submit_uring_splice(
     fd_in: RawFd,
     fd_out: RawFd,
     size: usize,
 ) -> std::io::Result<usize> {
-    use io_uring::{opcode, types, IoUring};
+    use io_uring::{opcode, types};
 
-    let mut ring = IoUring::new(8)?;
-    let splice_e = opcode::Splice::new(
-        types::Fd(fd_in),
-        -1i64,
-        types::Fd(fd_out),
-        -1i64,
-        size as u32,
-    )
-    .build()
-    .user_data(RingOpcode::Splice.user_data());
+    with_thread_ring(|ring| {
+        let splice_e = opcode::Splice::new(
+            types::Fd(fd_in),
+            -1i64,
+            types::Fd(fd_out),
+            -1i64,
+            size as u32,
+        )
+        .build()
+        .user_data(RingOpcode::Splice.user_data());
 
-    unsafe {
-        ring.submission()
-            .push(&splice_e)
-            .map_err(|_| std::io::Error::other("SQ queue full"))?;
-    }
+        unsafe {
+            ring.submission()
+                .push(&splice_e)
+                .map_err(|_| std::io::Error::other("SQ queue full"))?;
+        }
 
-    ring.submit_and_wait(1)?;
+        ring.submit_and_wait(1)?;
 
-    let cqe = ring
-        .completion()
-        .next()
-        .ok_or_else(|| std::io::Error::other("No CQE"))?;
+        let cqe = ring
+            .completion()
+            .next()
+            .ok_or_else(|| std::io::Error::other("No CQE"))?;
 
-    let ret = cqe.result();
-    if ret < 0 {
-        return Err(std::io::Error::from_raw_os_error(-ret));
-    }
-    Ok(ret as usize)
+        let ret = cqe.result();
+        if ret < 0 {
+            return Err(std::io::Error::from_raw_os_error(-ret));
+        }
+        Ok(ret as usize)
+    })
 }
