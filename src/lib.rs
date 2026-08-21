@@ -268,6 +268,31 @@ impl NativeFileIO {
         self.seek(py, 0, Some(1))
     }
 
+    /// Return the underlying file descriptor.
+    fn fileno(&self) -> PyResult<i32> {
+        let guard = self
+            .file
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("Lock error"))?;
+        let f = guard
+            .as_ref()
+            .ok_or_else(|| PyIOError::new_err("I/O operation on closed file."))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            Ok(f.as_raw_fd())
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            Ok(f.as_raw_handle() as i32)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Err(PyIOError::new_err("fileno not supported on this platform"))
+        }
+    }
+
     /// Return True if the stream was opened for reading.
     fn readable(&self) -> bool {
         self.is_read

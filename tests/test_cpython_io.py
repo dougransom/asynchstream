@@ -184,3 +184,18 @@ async def test_async_bytes_io() -> None:
     written = await buf.awrite(b"Overwritten Payload")
     assert written == 19
     assert buf.getvalue() == b"Overwritten Payloade Stream"
+
+
+@pytest.mark.asyncio
+async def test_async_string_io() -> None:
+    buf = io.StringIO("In-Memory Async Text Stream")
+    assert isinstance(buf, py_native_io.AsyncStringIO)
+    assert isinstance(buf, py_native_io.AsyncIOStream)
+
+    data = await buf.aread(9)
+    assert data == "In-Memory"
+
+    buf.seek(0)
+    written = await buf.awrite("Overwritten Payload")
+    assert written == 19
+    assert buf.getvalue() == "Overwritten Payloadt Stream"

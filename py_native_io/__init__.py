@@ -232,6 +232,34 @@ class AsyncBytesIO(io.BytesIO, AsyncIOBase):
         return 0
 
 
+class AsyncStringIO(io.StringIO, AsyncIOBase):  # type: ignore[misc]
+    """In-memory text stream supporting AsyncIOBase contract."""
+
+    async def aread(self, size: int = -1) -> str:  # type: ignore[override]
+        return self.read(size)
+
+    async def awrite(self, s: str) -> int:  # type: ignore[override]
+        return self.write(s)
+
+    async def aclose(self) -> None:
+        self.close()
+
+    async def aflush(self) -> None:
+        self.flush()
+
+    async def asplice(self, target: Any, size: int = -1) -> int:
+        chunk = await self.aread(size if size > 0 else 65536)
+        if not chunk:
+            return 0
+        if hasattr(target, "awrite"):
+            res_w: int = await target.awrite(chunk)
+            return res_w
+        elif hasattr(target, "write"):
+            res_sync: int = await asyncio.to_thread(target.write, chunk)
+            return res_sync
+        return 0
+
+
 class AsyncSocketIO(io.RawIOBase, AsyncIOBase):
     """Socket stream adhering to AsyncIOBase and AsyncIOStream contract."""
 
@@ -307,6 +335,7 @@ class MacOSKQueueFileIO(NativeFileIO):  # type: ignore[misc]
 # Target class resolution at initialization time: if (x) A = B else A = D
 use_native = _ext.is_kernel_ring_supported() if _ext is not None else False
 
+
 if use_native:
     if sys.platform.startswith("linux"):
         DefaultFileIO: Any = LinuxURingFileIO
@@ -318,6 +347,17 @@ if use_native:
         DefaultFileIO = NativeFileIO
 else:
     DefaultFileIO = FallbackFileIO
+
+
+def create_default_file_io(
+    file: Any, mode: str = "rb", closefd: bool = True, opener: Any = None
+) -> Any:
+    if use_native and (isinstance(file, (str, bytes)) or hasattr(file, "__fspath__")):
+        try:
+            return DefaultFileIO(file, mode, closefd=closefd, opener=opener)
+        except Exception:
+            pass
+    return FallbackFileIO(file, mode, closefd=closefd, opener=opener)
 
 
 class AsyncBufferedReader(io.BufferedReader, AsyncIOBase):
@@ -347,12 +387,25 @@ def patched_open(
     opener: Any = None,
 ) -> Any:
     """Full CPython open() implementation supporting binary, text, and buffered streams."""
+    if opener is not None or not isinstance(file, (str, bytes, os.PathLike, int)):
+        orig_open: Callable[..., Any] = getattr(builtins, "_orig_open", builtins.open)
+        return orig_open(
+            file,
+            mode,
+            buffering=buffering,
+            encoding=encoding,
+            errors=errors,
+            newline=newline,
+            closefd=closefd,
+            opener=opener,
+        )
+
     is_binary = "b" in mode
     raw_mode = mode
     if not is_binary and "t" not in mode:
         raw_mode = mode + "b" if "+" not in mode else mode.replace("+", "b+")
 
-    raw = DefaultFileIO(file, raw_mode, closefd=closefd, opener=opener)
+    raw = create_default_file_io(file, raw_mode, closefd=closefd, opener=opener)
 
     if is_binary:
         if buffering == 0:
@@ -413,13 +466,9 @@ def patched_socket_makefile(
     raw = AsyncSocketIO(self, raw_mode)
 
     if is_binary:
-        if buffering == 0:
+        if buffering == 0 or "+" in mode:
             return raw
-        elif "w" in mode or "a" in mode or "+" in mode:
-            if "r" in mode or "+" in mode:
-                return AsyncBufferedRandom(
-                    raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
-                )
+        elif "w" in mode or "a" in mode:
             return AsyncBufferedWriter(
                 raw, buffer_size=buffering if buffering > 0 else io.DEFAULT_BUFFER_SIZE
             )
@@ -463,6 +512,11 @@ def patch_python_io() -> None:
 
     io.FileIO = DefaultFileIO  # type: ignore[misc]
     io.BytesIO = AsyncBytesIO  # type: ignore[misc]
+    io.StringIO = AsyncStringIO  # type: ignore[misc]
+    io.BufferedReader = AsyncBufferedReader  # type: ignore[assignment,misc]
+    io.BufferedWriter = AsyncBufferedWriter  # type: ignore[assignment,misc]
+    io.BufferedRandom = AsyncBufferedRandom  # type: ignore[misc]
+    io.TextIOWrapper = AsyncTextIOWrapper  # type: ignore[assignment,misc]
     io.AsyncIOBase = AsyncIOBase  # type: ignore[attr-defined]
 
     builtins.open = patched_open
@@ -683,6 +737,7 @@ __all__ = [
     "AsyncIOBaseMeta",
     "AsyncIOStream",
     "AsyncSocketIO",
+    "AsyncStringIO",
     "AsyncStreamAdapter",
     "AsyncTextIOWrapper",
     "DefaultFileIO",
