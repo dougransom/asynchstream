@@ -381,19 +381,38 @@ fn is_kernel_ring_supported() -> bool {
     {
         is_linux_uring_secure_and_supported()
     }
-    #[cfg(target_os = "windows")]
+    #[cfg(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "dragonfly",
+        target_os = "solaris",
+        target_os = "illumos",
+        target_os = "aix",
+        target_os = "haiku",
+        target_os = "android"
+    ))]
     {
         true
     }
-    #[cfg(target_os = "macos")]
-    {
-        true
-    }
-    #[cfg(target_os = "freebsd")]
-    {
-        true
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos", target_os = "freebsd")))]
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd",
+        target_os = "dragonfly",
+        target_os = "solaris",
+        target_os = "illumos",
+        target_os = "aix",
+        target_os = "haiku",
+        target_os = "android"
+    )))]
     {
         false
     }

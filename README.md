@@ -79,5 +79,25 @@ PY_NATIVE_IO_FORCE_LEGACY=1 uv run pytest
 
 ---
 
+## **5. Cross-Platform Engine Matrix**
+
+`py-native-io` targets all primary and secondary OS platforms where Python 3 and Rust operate:
+
+| Operating System / Platform | Native Async Engine | Fallback Engine |
+| :--- | :--- | :--- |
+| **Linux (glibc / musl)** | `io_uring` (Kernel ≥ 5.10 LTS) | `FallbackFileIO` (Thread-pool) |
+| **Windows (10 / 11 / Server)** | `IoRing` / IOCP | `FallbackFileIO` (Thread-pool) |
+| **macOS / Darwin (Intel / Apple Silicon)** | `kqueue` / POSIX Async | `FallbackFileIO` (Thread-pool) |
+| **FreeBSD** | `kqueue` Async Engine | `FallbackFileIO` (Thread-pool) |
+| **NetBSD & OpenBSD** | `kqueue` Async Engine | `FallbackFileIO` (Thread-pool) |
+| **DragonFly BSD** | `kqueue` Async Engine | `FallbackFileIO` (Thread-pool) |
+| **Solaris / Illumos / SmartOS** | `event ports` Async | `FallbackFileIO` (Thread-pool) |
+| **IBM AIX & z/OS** | POSIX Async Engine | `FallbackFileIO` (Thread-pool) |
+| **Android (Termux / Kivy)** | `io_uring` / POSIX | `FallbackFileIO` (Thread-pool) |
+| **iOS / iPadOS (Pyto / Kivy)** | `kqueue` Async Engine | `FallbackFileIO` (Thread-pool) |
+| **WebAssembly (Pyodide / WASI)** | `AsyncBytesIO` In-Memory | In-Memory Buffer |
+
+---
+
 *For detailed platform implementation matrices, CPython test suite integration, and multi-phase roadmaps, see [`PROJECT_GOALS.md`](./PROJECT_GOALS.md).*
  
