@@ -1,7 +1,7 @@
 #[cfg(target_os = "linux")]
-use std::cell::RefCell;
-#[cfg(target_os = "linux")]
 use std::os::unix::io::RawFd;
+#[cfg(target_os = "linux")]
+use std::sync::Mutex;
 
 #[cfg(target_os = "linux")]
 use io_uring::IoUring;
@@ -23,7 +23,7 @@ impl RingOpcode {
 
 #[cfg(target_os = "linux")]
 thread_local! {
-    static THREAD_RING: RefCell<Option<IoUring>> = const { RefCell::new(None) };
+    static THREAD_RING: Mutex<Option<IoUring>> = const { Mutex::new(None) };
 }
 
 /// Retrieve configured io_uring submission queue depth size.
@@ -42,14 +42,14 @@ fn get_configured_ring_size() -> u32 {
     1024
 }
 
-/// Execute a closure with a persistent thread-local `io_uring` instance.
+/// Execute a closure with a persistent thread-local `io_uring` instance under a thread-local lock.
 #[cfg(target_os = "linux")]
 pub fn with_thread_ring<F, R>(f: F) -> std::io::Result<R>
 where
     F: FnOnce(&mut IoUring) -> std::io::Result<R>,
 {
-    THREAD_RING.with(|cell| {
-        let mut option = cell.borrow_mut();
+    THREAD_RING.with(|mutex| {
+        let mut option = mutex.lock().map_err(|_| std::io::Error::other("Lock error"))?;
         if option.is_none() {
             let entries = get_configured_ring_size();
             *option = Some(IoUring::new(entries)?);
@@ -95,33 +95,40 @@ pub fn is_linux_uring_secure_and_supported() -> bool {
 }
 
 /// Helper function to submit an IORING_OP_READ submission queue entry (SQE)
-/// using the persistent thread-local io_uring ring.
+/// using the persistent thread-local io_uring ring under atomic thread-local mutex lock.
 #[cfg(target_os = "linux")]
-pub fn submit_uring_read(fd: RawFd, size: usize) -> std::io::Result<Vec<u8>> {
+pub fn submit_uring_read(fd: RawFd, offset: u64, size: usize) -> std::io::Result<Vec<u8>> {
     use io_uring::{opcode, types};
 
     with_thread_ring(|ring| {
         let mut buf = vec![0u8; size];
         let read_e = opcode::Read::new(types::Fd(fd), buf.as_mut_ptr(), size as u32)
-            .offset(0)
+            .offset(offset)
             .build()
             .user_data(RingOpcode::Read.user_data());
 
         unsafe {
             if ring.submission().push(&read_e).is_err() {
-                ring.submit_and_wait(1)?;
+                ring.submit()?;
                 ring.submission()
                     .push(&read_e)
                     .map_err(|_| std::io::Error::other("SQ queue full"))?;
             }
         }
 
-        ring.submit_and_wait(1)?;
+        ring.submit()?;
 
-        let cqe = ring
-            .completion()
-            .next()
-            .ok_or_else(|| std::io::Error::other("No CQE"))?;
+        let cqe = {
+            let maybe_cqe = ring.completion().next();
+            if let Some(cqe) = maybe_cqe {
+                cqe
+            } else {
+                ring.submit_and_wait(1)?;
+                ring.completion()
+                    .next()
+                    .ok_or_else(|| std::io::Error::other("No CQE"))?
+            }
+        };
 
         let ret = cqe.result();
         if ret < 0 {
@@ -133,7 +140,7 @@ pub fn submit_uring_read(fd: RawFd, size: usize) -> std::io::Result<Vec<u8>> {
 }
 
 /// Helper function to submit an IORING_OP_WRITE submission queue entry (SQE)
-/// using the persistent thread-local io_uring ring.
+/// using the persistent thread-local io_uring ring under atomic thread-local mutex lock.
 #[cfg(target_os = "linux")]
 pub fn submit_uring_write(fd: RawFd, bytes: &[u8]) -> std::io::Result<usize> {
     use io_uring::{opcode, types};
@@ -146,19 +153,26 @@ pub fn submit_uring_write(fd: RawFd, bytes: &[u8]) -> std::io::Result<usize> {
 
         unsafe {
             if ring.submission().push(&write_e).is_err() {
-                ring.submit_and_wait(1)?;
+                ring.submit()?;
                 ring.submission()
                     .push(&write_e)
                     .map_err(|_| std::io::Error::other("SQ queue full"))?;
             }
         }
 
-        ring.submit_and_wait(1)?;
+        ring.submit()?;
 
-        let cqe = ring
-            .completion()
-            .next()
-            .ok_or_else(|| std::io::Error::other("No CQE"))?;
+        let cqe = {
+            let maybe_cqe = ring.completion().next();
+            if let Some(cqe) = maybe_cqe {
+                cqe
+            } else {
+                ring.submit_and_wait(1)?;
+                ring.completion()
+                    .next()
+                    .ok_or_else(|| std::io::Error::other("No CQE"))?
+            }
+        };
 
         let ret = cqe.result();
         if ret < 0 {

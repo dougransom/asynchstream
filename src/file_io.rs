@@ -122,34 +122,54 @@ impl NativeFileIO {
         })
     }
 
-    /// Asynchronously read up to size bytes using native kernel ring completion without threadpool dispatching.
+    /// Asynchronously read up to size bytes using native kernel ring completion.
     fn aread<'p>(&self, py: Python<'p>, size: Option<isize>) -> PyResult<&'p PyAny> {
         let path = self.path.clone();
         let s = size.unwrap_or(-1);
-        future_into_py(py, async move {
-            let read_size = if s < 0 { 65536 } else { s as usize };
-            let f = File::open(&path).map_err(|e| PyIOError::new_err(e.to_string()))?;
-
+        let raw_fd = {
+            let guard = self
+                .file
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("Lock error"))?;
+            let f = guard
+                .as_ref()
+                .ok_or_else(|| PyIOError::new_err("I/O operation on closed file."))?;
             #[cfg(target_os = "linux")]
             {
                 use std::os::unix::io::AsRawFd;
-                if let Ok(buf) = engines::linux::submit_uring_read(f.as_raw_fd(), read_size) {
-                    let py_bytes = Python::with_gil(|py| PyBytes::new(py, &buf).to_object(py));
-                    return Ok(py_bytes);
-                }
+                f.as_raw_fd()
             }
             #[cfg(target_os = "windows")]
             {
                 use std::os::windows::io::AsRawHandle;
-                if let Ok(buf) = engines::windows::submit_ioring_read(f.as_raw_handle(), read_size) {
-                    let py_bytes = Python::with_gil(|py| PyBytes::new(py, &buf).to_object(py));
-                    return Ok(py_bytes);
-                }
+                f.as_raw_handle() as usize
             }
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+            {
+                0
+            }
+        };
+        future_into_py(py, async move {
+            let read_size = if s < 0 { 65536 } else { s as usize };
 
-            // Fallback for non-ring target OS
-            let buf = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
-                let mut f = f;
+            let res = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
+                #[cfg(target_os = "linux")]
+                {
+                    if let Ok(buf) = engines::linux::submit_uring_read(raw_fd, 0, read_size) {
+                        return Ok(buf);
+                    }
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    if let Ok(buf) = engines::windows::submit_ioring_read(
+                        raw_fd as std::os::windows::io::RawHandle,
+                        read_size,
+                    ) {
+                        return Ok(buf);
+                    }
+                }
+
+                let mut f = File::open(&path)?;
                 let mut buf = Vec::new();
                 if s < 0 {
                     f.read_to_end(&mut buf)?;
@@ -164,12 +184,12 @@ impl NativeFileIO {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
             .map_err(|e| PyIOError::new_err(e.to_string()))?;
 
-            let py_bytes = Python::with_gil(|py| PyBytes::new(py, &buf).to_object(py));
+            let py_bytes = Python::with_gil(|py| PyBytes::new(py, &res).to_object(py));
             Ok(py_bytes)
         })
     }
 
-    /// Asynchronously write bytes using native kernel ring completion without threadpool dispatching.
+    /// Asynchronously write bytes using native kernel ring completion.
     fn awrite<'p>(&self, py: Python<'p>, b: &PyAny) -> PyResult<&'p PyAny> {
         let bytes: Vec<u8> = if let Ok(v) = b.extract::<Vec<u8>>() {
             v
@@ -179,31 +199,48 @@ impl NativeFileIO {
             return Err(PyTypeError::new_err("expected bytes-like object or str"));
         };
         let path = self.path.clone();
-        future_into_py(py, async move {
-            let f = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .map_err(|e| PyIOError::new_err(e.to_string()))?;
-
+        let raw_fd = {
+            let guard = self
+                .file
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("Lock error"))?;
+            let f = guard
+                .as_ref()
+                .ok_or_else(|| PyIOError::new_err("I/O operation on closed file."))?;
             #[cfg(target_os = "linux")]
             {
                 use std::os::unix::io::AsRawFd;
-                if let Ok(written) = engines::linux::submit_uring_write(f.as_raw_fd(), &bytes) {
-                    return Ok(written);
-                }
+                f.as_raw_fd()
             }
             #[cfg(target_os = "windows")]
             {
                 use std::os::windows::io::AsRawHandle;
-                if let Ok(written) = engines::windows::submit_ioring_write(f.as_raw_handle(), &bytes) {
-                    return Ok(written);
-                }
+                f.as_raw_handle() as usize
             }
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+            {
+                0
+            }
+        };
+        future_into_py(py, async move {
+            let written = tokio::task::spawn_blocking(move || -> std::io::Result<usize> {
+                #[cfg(target_os = "linux")]
+                {
+                    if let Ok(w) = engines::linux::submit_uring_write(raw_fd, &bytes) {
+                        return Ok(w);
+                    }
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    if let Ok(w) = engines::windows::submit_ioring_write(
+                        raw_fd as std::os::windows::io::RawHandle,
+                        &bytes,
+                    ) {
+                        return Ok(w);
+                    }
+                }
 
-            // Fallback for non-ring target OS
-            let len = tokio::task::spawn_blocking(move || -> std::io::Result<usize> {
-                let mut f = f;
+                let mut f = OpenOptions::new().create(true).append(true).open(&path)?;
                 f.write_all(&bytes)?;
                 Ok(bytes.len())
             })
@@ -211,7 +248,7 @@ impl NativeFileIO {
             .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
             .map_err(|e| PyIOError::new_err(e.to_string()))?;
 
-            Ok(len)
+            Ok(written)
         })
     }
 
