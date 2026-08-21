@@ -137,8 +137,17 @@ fn poll_completion_for_id(
     }
 }
 
+/// Flush all pending submission queue entries to the Linux kernel ring in a single syscall.
+#[cfg(target_os = "linux")]
+pub fn flush_thread_ring() -> std::io::Result<usize> {
+    with_thread_ring_state(|ring, _completed| {
+        let submitted = ring.submit()?;
+        Ok(submitted)
+    })
+}
+
 /// Helper function to submit an IORING_OP_READ submission queue entry (SQE)
-/// using the persistent thread-local io_uring ring with re-entrant user_data matching.
+/// using the persistent thread-local io_uring ring with deferred batch submission.
 #[cfg(target_os = "linux")]
 pub fn submit_uring_read(fd: RawFd, offset: u64, size: usize) -> std::io::Result<Vec<u8>> {
     use io_uring::{opcode, types};
@@ -161,7 +170,6 @@ pub fn submit_uring_read(fd: RawFd, offset: u64, size: usize) -> std::io::Result
             }
         }
 
-        ring.submit()?;
         Ok(())
     })?;
 
@@ -177,7 +185,7 @@ pub fn submit_uring_read(fd: RawFd, offset: u64, size: usize) -> std::io::Result
 }
 
 /// Helper function to submit an IORING_OP_WRITE submission queue entry (SQE)
-/// using the persistent thread-local io_uring ring with re-entrant user_data matching.
+/// using the persistent thread-local io_uring ring with deferred batch submission.
 #[cfg(target_os = "linux")]
 pub fn submit_uring_write(fd: RawFd, bytes: &[u8]) -> std::io::Result<usize> {
     use io_uring::{opcode, types};
@@ -199,7 +207,6 @@ pub fn submit_uring_write(fd: RawFd, bytes: &[u8]) -> std::io::Result<usize> {
             }
         }
 
-        ring.submit()?;
         Ok(())
     })?;
 
@@ -245,7 +252,6 @@ pub fn submit_uring_splice(
             }
         }
 
-        ring.submit()?;
         Ok(())
     })?;
 

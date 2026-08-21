@@ -152,13 +152,15 @@ impl NativeFileIO {
         future_into_py(py, async move {
             let read_size = if s < 0 { 65536 } else { s as usize };
 
-            let res = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
-                #[cfg(target_os = "linux")]
-                {
-                    if let Ok(buf) = engines::linux::submit_uring_read(raw_fd, 0, read_size) {
-                        return Ok(buf);
-                    }
+            #[cfg(target_os = "linux")]
+            {
+                if let Ok(res) = engines::linux::submit_uring_read(raw_fd, 0, read_size) {
+                    let py_bytes = Python::with_gil(|py| PyBytes::new(py, &res).to_object(py));
+                    return Ok(py_bytes);
                 }
+            }
+
+            let res = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<u8>> {
                 #[cfg(target_os = "windows")]
                 {
                     if let Ok(buf) = engines::windows::submit_ioring_read(
@@ -223,13 +225,14 @@ impl NativeFileIO {
             }
         };
         future_into_py(py, async move {
-            let written = tokio::task::spawn_blocking(move || -> std::io::Result<usize> {
-                #[cfg(target_os = "linux")]
-                {
-                    if let Ok(w) = engines::linux::submit_uring_write(raw_fd, &bytes) {
-                        return Ok(w);
-                    }
+            #[cfg(target_os = "linux")]
+            {
+                if let Ok(written) = engines::linux::submit_uring_write(raw_fd, &bytes) {
+                    return Ok(written);
                 }
+            }
+
+            let written = tokio::task::spawn_blocking(move || -> std::io::Result<usize> {
                 #[cfg(target_os = "windows")]
                 {
                     if let Ok(w) = engines::windows::submit_ioring_write(
