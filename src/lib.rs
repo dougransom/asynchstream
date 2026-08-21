@@ -13,6 +13,8 @@ use pyo3_asyncio::tokio::future_into_py;
 pub struct NativeFileIO {
     file: Mutex<Option<File>>,
     path: PathBuf,
+    is_read: bool,
+    is_write: bool,
 }
 
 #[allow(non_local_definitions)]
@@ -31,15 +33,17 @@ impl NativeFileIO {
         let path = PathBuf::from(path_str);
 
         let mut options = OpenOptions::new();
-        let is_write = mode_str.contains('w');
-        if is_write || mode_str.contains('a') {
-            let set_write_mode: fn(&mut OpenOptions, bool) -> &mut OpenOptions = if is_write {
+        let is_write = mode_str.contains('w') || mode_str.contains('a') || mode_str.contains('+');
+        let is_read = mode_str.contains('r') || mode_str.contains('+') || (!mode_str.contains('w') && !mode_str.contains('a'));
+
+        if is_write {
+            let set_write_mode: fn(&mut OpenOptions, bool) -> &mut OpenOptions = if mode_str.contains('w') {
                 OpenOptions::truncate
             } else {
                 OpenOptions::append
             };
             set_write_mode(options.write(true).create(true), true);
-            if mode_str.contains('+') {
+            if mode_str.contains('+') || mode_str.contains('r') {
                 options.read(true);
             }
         } else {
@@ -55,6 +59,8 @@ impl NativeFileIO {
         Ok(NativeFileIO {
             file: Mutex::new(Some(f)),
             path,
+            is_read,
+            is_write,
         })
     }
 
@@ -237,11 +243,11 @@ impl NativeFileIO {
     }
 
     fn readable(&self) -> bool {
-        true
+        self.is_read
     }
 
     fn writable(&self) -> bool {
-        true
+        self.is_write
     }
 
     fn seekable(&self) -> bool {
