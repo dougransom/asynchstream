@@ -26,6 +26,19 @@ thread_local! {
     static THREAD_RING: RefCell<Option<IoUring>> = const { RefCell::new(None) };
 }
 
+/// Retrieve configured ring size (must be power of two, defaults to 1024).
+#[cfg(target_os = "linux")]
+fn get_configured_ring_size() -> u32 {
+    if let Ok(val) = std::env::var("PY_NATIVE_IO_RING_SIZE") {
+        if let Ok(parsed) = val.parse::<u32>() {
+            if parsed > 0 && parsed.is_power_of_two() {
+                return parsed;
+            }
+        }
+    }
+    1024
+}
+
 /// Execute a closure with a persistent thread-local `io_uring` instance.
 #[cfg(target_os = "linux")]
 pub fn with_thread_ring<F, R>(f: F) -> std::io::Result<R>
@@ -35,7 +48,8 @@ where
     THREAD_RING.with(|cell| {
         let mut option = cell.borrow_mut();
         if option.is_none() {
-            *option = Some(IoUring::new(256)?);
+            let entries = get_configured_ring_size();
+            *option = Some(IoUring::new(entries)?);
         }
         let ring = option.as_mut().unwrap();
         f(ring)
@@ -91,9 +105,12 @@ pub fn submit_uring_read(fd: RawFd, size: usize) -> std::io::Result<Vec<u8>> {
             .user_data(RingOpcode::Read.user_data());
 
         unsafe {
-            ring.submission()
-                .push(&read_e)
-                .map_err(|_| std::io::Error::other("SQ queue full"))?;
+            if ring.submission().push(&read_e).is_err() {
+                ring.submit_and_wait(1)?;
+                ring.submission()
+                    .push(&read_e)
+                    .map_err(|_| std::io::Error::other("SQ queue full"))?;
+            }
         }
 
         ring.submit_and_wait(1)?;
@@ -125,9 +142,12 @@ pub fn submit_uring_write(fd: RawFd, bytes: &[u8]) -> std::io::Result<usize> {
             .user_data(RingOpcode::Write.user_data());
 
         unsafe {
-            ring.submission()
-                .push(&write_e)
-                .map_err(|_| std::io::Error::other("SQ queue full"))?;
+            if ring.submission().push(&write_e).is_err() {
+                ring.submit_and_wait(1)?;
+                ring.submission()
+                    .push(&write_e)
+                    .map_err(|_| std::io::Error::other("SQ queue full"))?;
+            }
         }
 
         ring.submit_and_wait(1)?;
@@ -167,9 +187,12 @@ pub fn submit_uring_splice(
         .user_data(RingOpcode::Splice.user_data());
 
         unsafe {
-            ring.submission()
-                .push(&splice_e)
-                .map_err(|_| std::io::Error::other("SQ queue full"))?;
+            if ring.submission().push(&splice_e).is_err() {
+                ring.submit_and_wait(1)?;
+                ring.submission()
+                    .push(&splice_e)
+                    .map_err(|_| std::io::Error::other("SQ queue full"))?;
+            }
         }
 
         ring.submit_and_wait(1)?;
