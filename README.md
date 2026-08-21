@@ -95,6 +95,17 @@ uv run python examples/07_scale_5000_files_benchmark.py # Scalability & performa
 
 ---
 
+### **Environment Configuration**
+
+You can configure native kernel completion rings using environment variables:
+
+| Environment Variable | Description | Default Value |
+| :--- | :--- | :--- |
+| `PY_NATIVE_IO_RING_SIZE` | Sets the Linux `io_uring` ring submission queue depth size. Must be a positive power of two (*e.g., `256`, `1024`, `4096`*). | `1024` |
+| `PY_NATIVE_IO_FORCE_LEGACY` | Set to `1` or `true` to force legacy Python thread-pool fallback mode, bypassing native kernel completion rings. | Unset |
+
+---
+
 ## **5. Cross-Platform Engine Matrix**
 
 `py-native-io` targets all primary and secondary OS platforms where Python 3 and Rust operate:

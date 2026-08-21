@@ -26,7 +26,10 @@ thread_local! {
     static THREAD_RING: RefCell<Option<IoUring>> = const { RefCell::new(None) };
 }
 
-/// Retrieve configured ring size (must be power of two, defaults to 1024).
+/// Retrieve configured io_uring submission queue depth size.
+///
+/// Configurable via the `PY_NATIVE_IO_RING_SIZE` environment variable.
+/// Must be a positive power of two (e.g., 256, 1024, 4096). Defaults to 1024.
 #[cfg(target_os = "linux")]
 fn get_configured_ring_size() -> u32 {
     if let Ok(val) = std::env::var("PY_NATIVE_IO_RING_SIZE") {

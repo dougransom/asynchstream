@@ -9,6 +9,9 @@ pub type NativeHandle = std::os::unix::io::RawFd;
 pub type NativeHandle = std::os::windows::io::RawHandle;
 
 /// Query whether the host OS kernel supports secure native kernel completion rings.
+///
+/// Configurable via the `PY_NATIVE_IO_FORCE_LEGACY` environment variable (setting to 1 or true
+/// disables native rings and forces legacy threadpool fallback mode).
 pub fn is_kernel_ring_supported() -> bool {
     if std::env::var("PY_NATIVE_IO_FORCE_LEGACY").is_ok() {
         return false;
