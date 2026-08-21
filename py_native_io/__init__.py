@@ -1,6 +1,7 @@
 import asyncio
 import builtins
 import io
+import os
 import sys
 from abc import ABCMeta
 from collections.abc import Callable
@@ -24,6 +25,8 @@ class AsyncIOStream(Protocol):
     async def aclose(self) -> None: ...
 
     async def aflush(self) -> None: ...
+
+    async def asplice(self, target: Any, size: int = -1) -> int: ...
 
 
 class AsyncIOBaseMeta(ABCMeta):
@@ -86,6 +89,30 @@ class AsyncIOBase(io.IOBase, metaclass=AsyncIOBaseMeta):
 
     async def aflush(self) -> None:
         await asyncio.to_thread(self.flush)
+
+    async def asplice(self, target: Any, size: int = -1) -> int:
+        target_fd = (
+            target
+            if isinstance(target, int)
+            else (target.fileno() if hasattr(target, "fileno") else -1)
+        )
+        ext_asplice = getattr(self, "_ext_asplice", None)
+        if callable(ext_asplice) and target_fd != -1:
+            res: int = await ext_asplice(target_fd, size)
+            return res
+        chunk = await self.aread(size if size > 0 else 65536)
+        if not chunk:
+            return 0
+        if hasattr(target, "awrite"):
+            res_w: int = await target.awrite(chunk)
+            return res_w
+        elif hasattr(target, "write"):
+            res_sync: int = await asyncio.to_thread(target.write, chunk)
+            return res_sync
+        elif isinstance(target_fd, int) and target_fd != -1:
+            res_fd: int = await asyncio.to_thread(os.write, target_fd, chunk)
+            return res_fd
+        return 0
 
     def read(self, size: int = -1) -> bytes:
         try:

@@ -1,4 +1,5 @@
 import io
+import os
 from pathlib import Path
 
 import pytest
@@ -87,3 +88,20 @@ async def test_async_cpython_streams(tmp_path: Path) -> None:
         assert data == b"Async Raw"
         await f.aclose()
         assert f.closed
+
+
+@pytest.mark.asyncio
+async def test_zero_copy_splice(tmp_path: Path) -> None:
+    src_file = tmp_path / "splice_src.bin"
+    src_file.write_bytes(b"Splice Zero Copy Kernel Payload")
+
+    r_fd, w_fd = os.pipe()
+    try:
+        with open(src_file, "rb", buffering=0) as src_stream:
+            copied = await src_stream.asplice(w_fd, 31)
+            assert copied == 31
+            pipe_data = os.read(r_fd, 31)
+            assert pipe_data == b"Splice Zero Copy Kernel Payload"
+    finally:
+        os.close(r_fd)
+        os.close(w_fd)

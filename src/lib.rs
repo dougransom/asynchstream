@@ -262,6 +262,39 @@ impl NativeFileIO {
         future_into_py(py, async move { Ok(()) })
     }
 
+    fn asplice<'p>(&self, py: Python<'p>, target_fd: i32, size: Option<usize>) -> PyResult<&'p PyAny> {
+        let path = self.path.clone();
+        let len = size.unwrap_or(65536);
+        future_into_py(py, async move {
+            let n = tokio::task::spawn_blocking(move || -> std::io::Result<usize> {
+                let f = File::open(&path)?;
+                #[cfg(target_os = "linux")]
+                {
+                    use std::os::unix::io::AsRawFd;
+                    if let Ok(copied) = submit_uring_splice(f.as_raw_fd(), target_fd, len) {
+                        return Ok(copied);
+                    }
+                }
+                let mut f = f;
+                let mut buf = vec![0u8; len];
+                let read_n = f.read(&mut buf)?;
+                #[cfg(target_os = "linux")]
+                {
+                    use std::os::unix::io::FromRawFd;
+                    let mut target_file = unsafe { File::from_raw_fd(target_fd) };
+                    let res = target_file.write_all(&buf[..read_n]);
+                    std::mem::forget(target_file);
+                    res?;
+                }
+                Ok(read_n)
+            })
+            .await
+            .map_err(|e| PyRuntimeError::new_err(e.to_string()))?
+            .map_err(|e| PyIOError::new_err(e.to_string()))?;
+            Ok(n)
+        })
+    }
+
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
@@ -380,6 +413,45 @@ fn submit_uring_write(fd: std::os::unix::io::RawFd, bytes: &[u8]) -> std::io::Re
     unsafe {
         ring.submission()
             .push(&write_e)
+            .map_err(|_| std::io::Error::other("SQ queue full"))?;
+    }
+
+    ring.submit_and_wait(1)?;
+
+    let cqe = ring
+        .completion()
+        .next()
+        .ok_or_else(|| std::io::Error::other("No CQE"))?;
+
+    let ret = cqe.result();
+    if ret < 0 {
+        return Err(std::io::Error::from_raw_os_error(-ret));
+    }
+    Ok(ret as usize)
+}
+
+#[cfg(target_os = "linux")]
+fn submit_uring_splice(
+    fd_in: std::os::unix::io::RawFd,
+    fd_out: std::os::unix::io::RawFd,
+    size: usize,
+) -> std::io::Result<usize> {
+    use io_uring::{opcode, types, IoUring};
+
+    let mut ring = IoUring::new(8)?;
+    let splice_e = opcode::Splice::new(
+        types::Fd(fd_in),
+        -1i64,
+        types::Fd(fd_out),
+        -1i64,
+        size as u32,
+    )
+    .build()
+    .user_data(0x03);
+
+    unsafe {
+        ring.submission()
+            .push(&splice_e)
             .map_err(|_| std::io::Error::other("SQ queue full"))?;
     }
 
