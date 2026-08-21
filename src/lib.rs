@@ -389,7 +389,11 @@ fn is_kernel_ring_supported() -> bool {
     {
         true
     }
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    #[cfg(target_os = "freebsd")]
+    {
+        true
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos", target_os = "freebsd")))]
     {
         false
     }

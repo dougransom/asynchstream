@@ -75,6 +75,25 @@ jobs:
           name: wheels-macos-${{ matrix.target }}
           path: dist
 
+  freebsd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build wheel on FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            pkg install -y rust python312 py312-pip
+            python3.12 -m pip install maturin
+          run: |
+            maturin build --release --out dist
+      - name: Upload FreeBSD wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-freebsd-x86_64
+          path: dist
+
   sdist:
     runs-on: ubuntu-latest
     steps:
@@ -93,7 +112,7 @@ jobs:
   release:
     name: Release & Publish
     runs-on: ubuntu-latest
-    needs: [linux, windows, macos, sdist]
+    needs: [linux, windows, macos, freebsd, sdist]
     steps:
       - uses: actions/download-artifact@v4
         with:
