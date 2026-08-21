@@ -1,5 +1,6 @@
 import builtins
 import io
+import logging
 import sys
 from collections.abc import Callable
 from typing import Any
@@ -110,19 +111,33 @@ class MacOSKQueueFileIO(NativeFileIO):  # type: ignore[misc]
     """macOS kqueue native completion file stream."""
 
 
+logger = logging.getLogger("py_native_io")
+
 use_native = _ext.is_kernel_ring_supported() if _ext is not None else False
+engine_info: str
 
 if use_native:
     if sys.platform.startswith("linux"):
         DefaultFileIO: Any = LinuxURingFileIO
+        engine_info = "Linux io_uring kernel completion ring"
     elif sys.platform.startswith("win"):
         DefaultFileIO = WindowsIoRingFileIO
+        engine_info = "Windows IoRing completion ring"
     elif sys.platform.startswith("darwin"):
         DefaultFileIO = MacOSKQueueFileIO
+        engine_info = "macOS kqueue completion ring"
     else:
         DefaultFileIO = NativeFileIO
+        engine_info = "Native C-extension engine"
 else:
     DefaultFileIO = FallbackFileIO
+    engine_info = "Cross-platform thread-pool fallback engine"
+
+logger.debug(
+    "py-native-io: selected DefaultFileIO implementation '%s' (%s)",
+    DefaultFileIO.__name__,
+    engine_info,
+)
 
 
 def create_default_file_io(

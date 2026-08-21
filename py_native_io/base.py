@@ -1,8 +1,12 @@
 import asyncio
 import io
+import logging
 import os
 from abc import ABCMeta
 from typing import Any, Protocol, runtime_checkable
+
+logger = logging.getLogger("py_native_io")
+_logged_classes: set[type] = set()
 
 
 @runtime_checkable
@@ -27,6 +31,7 @@ class AsyncIOBaseMeta(ABCMeta):
         mcls, name: str, bases: tuple[type, ...], namespace: dict[str, Any]
     ) -> "AsyncIOBaseMeta":
         cls: AsyncIOBaseMeta = super().__new__(mcls, name, bases, namespace)
+        synthesized: list[str] = []
 
         if "read" in namespace and "aread" not in namespace:
             sync_read = namespace["read"]
@@ -35,6 +40,7 @@ class AsyncIOBaseMeta(ABCMeta):
                 return await asyncio.to_thread(sync_read, self, size)
 
             cls.aread = auto_aread  # type: ignore[attr-defined]
+            synthesized.append("aread")
 
         if "write" in namespace and "awrite" not in namespace:
             sync_write = namespace["write"]
@@ -43,6 +49,7 @@ class AsyncIOBaseMeta(ABCMeta):
                 return await asyncio.to_thread(sync_write, self, b)
 
             cls.awrite = auto_awrite  # type: ignore[attr-defined]
+            synthesized.append("awrite")
 
         if "close" in namespace and "aclose" not in namespace:
             sync_close = namespace["close"]
@@ -51,6 +58,7 @@ class AsyncIOBaseMeta(ABCMeta):
                 await asyncio.to_thread(sync_close, self)
 
             cls.aclose = auto_aclose  # type: ignore[attr-defined]
+            synthesized.append("aclose")
 
         if "flush" in namespace and "aflush" not in namespace:
             sync_flush = namespace["flush"]
@@ -59,6 +67,17 @@ class AsyncIOBaseMeta(ABCMeta):
                 await asyncio.to_thread(sync_flush, self)
 
             cls.aflush = auto_aflush  # type: ignore[attr-defined]
+            synthesized.append("aflush")
+
+        if cls not in _logged_classes:
+            _logged_classes.add(cls)
+            synth_msg = f" [synthesized: {', '.join(synthesized)}]" if synthesized else ""
+            logger.debug(
+                "py-native-io: metaclass registered class '%s.%s'%s",
+                cls.__module__,
+                cls.__qualname__,
+                synth_msg,
+            )
 
         return cls
 
