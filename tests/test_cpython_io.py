@@ -105,3 +105,67 @@ async def test_zero_copy_splice(tmp_path: Path) -> None:
     finally:
         os.close(r_fd)
         os.close(w_fd)
+
+
+class CustomLegacyStream:
+    """A third-party legacy sync-only stream class."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.pos = 0
+        self.closed_flag = False
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0:
+            res = self.data[self.pos :]
+            self.pos = len(self.data)
+            return res
+        res = self.data[self.pos : self.pos + size]
+        self.pos += size
+        return res
+
+    def close(self) -> None:
+        self.closed_flag = True
+
+    @property
+    def closed(self) -> bool:
+        return self.closed_flag
+
+
+@pytest.mark.asyncio
+async def test_wrap_stream() -> None:
+    raw = CustomLegacyStream(b"Legacy Payload Data")
+    assert not isinstance(raw, py_native_io.AsyncIOStream)
+
+    wrapped = py_native_io.wrap_stream(raw)
+    assert isinstance(wrapped, py_native_io.AsyncIOStream)
+    res = await wrapped.aread(14)
+    assert res == b"Legacy Payload"
+    await wrapped.aclose()
+    assert wrapped.closed
+
+
+@pytest.mark.asyncio
+async def test_patch_stream() -> None:
+    raw = CustomLegacyStream(b"In-place Patched Stream")
+    assert not isinstance(raw, py_native_io.AsyncIOStream)
+
+    patched = py_native_io.patch_stream(raw)
+    assert isinstance(patched, py_native_io.AsyncIOStream)
+    res = await patched.aread(8)
+    assert res == b"In-place"
+    await patched.aclose()
+    assert patched.closed
+
+
+@pytest.mark.asyncio
+async def test_ensure_async_stream() -> None:
+    s1 = CustomLegacyStream(b"Facade In-Place Data")
+    ensured1 = py_native_io.ensure_async_stream(s1, in_place=True)
+    assert isinstance(ensured1, py_native_io.AsyncIOStream)
+    assert await ensured1.aread(6) == b"Facade"
+
+    s2 = CustomLegacyStream(b"Facade Wrapped Data")
+    ensured2 = py_native_io.ensure_async_stream(s2, in_place=False)
+    assert isinstance(ensured2, py_native_io.AsyncIOStream)
+    assert await ensured2.aread(6) == b"Facade"
