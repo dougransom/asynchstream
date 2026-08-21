@@ -55,3 +55,9 @@ Build a high-performance Rust C-extension for Python (`pyo3`) that unifies synch
   * Python Formatting & Linting: `ruff`
   * Strict Type Checking: `mypy` (with `py.typed` marker shipped)
   * Testing: `pytest` + `pytest-asyncio`
+
+---
+
+## 6. Implementation TODO List
+
+For a granular, updated checklist tracking engine implementation progress across Linux (`io_uring`), Windows (`IoRing`), macOS/BSD (`kqueue`), Solaris (`event ports`), IBM AIX (`POSIX AIO`), and WASI, see [`TODO.md`](./TODO.md).

@@ -99,5 +99,5 @@ PY_NATIVE_IO_FORCE_LEGACY=1 uv run pytest
 
 ---
 
-*For detailed platform implementation matrices, CPython test suite integration, and multi-phase roadmaps, see [`PROJECT_GOALS.md`](./PROJECT_GOALS.md).*
+*For detailed platform implementation matrices, active feature checklists, and multi-phase roadmaps, see [`TODO.md`](./TODO.md) and [`PROJECT_GOALS.md`](./PROJECT_GOALS.md).*
  
