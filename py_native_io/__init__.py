@@ -28,6 +28,7 @@ from py_native_io.patch import (
     patched_socket_makefile,
     wrap_stream,
 )
+from py_native_io.print import aprint, get_async_stderr, get_async_stdout
 from py_native_io.socket import AsyncSocketIO
 
 logger = logging.getLogger("py_native_io")
@@ -54,7 +55,10 @@ __all__ = [
     "NativeFileIO",
     "WindowsIoRingFileIO",
     "_ext",
+    "aprint",
     "ensure_async_stream",
+    "get_async_stderr",
+    "get_async_stdout",
     "logger",
     "patch_python_io",
     "patch_stream",

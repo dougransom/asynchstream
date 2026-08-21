@@ -34,6 +34,17 @@ The `AsyncIOBaseMeta` metaclass enforces dynamic method target resolution using 
 * If a stream class defines synchronous `.read()` but lacks a native `.aread()`, the metaclass automatically attaches a dynamically generated `asyncio.to_thread` wrapper.
 * Calling synchronous `.read()` inside an active event loop raises a `RuntimeError` to prevent silent event-loop blocking.
 
+### **Asynchronous Printing (`aprint`)**
+`py-native-io` provides `aprint(*objects, sep=' ', end='\n', file=None, flush=False)` for non-blocking asynchronous output:
+* Writes directly to kernel stdout (FD 1) or any async file stream using native `awrite()` / `io_uring`.
+* Supports `sep`, `end`, `file`, and `flush` parameters identical to Python's built-in `print()`.
+
+```python
+from py_native_io import aprint
+
+await aprint("🚀 High-performance", "asynchronous print!", sep=" ")
+```
+
 ---
 
 ## **2. Standard Library Patching (`sitecustomize.py`)**
