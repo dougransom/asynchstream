@@ -201,27 +201,35 @@ class FallbackFileIO(AsyncIOBase):
         self.close()
 
 
-class AsyncBytesIO(AsyncIOBase):
-    """In-memory binary stream adhering to the AsyncIOBase contract."""
+class AsyncBytesIO(io.BytesIO, AsyncIOBase):
+    """In-memory binary byte stream supporting AsyncIOBase contract."""
 
-    def __init__(self, initial_bytes: bytes = b"") -> None:
-        super().__init__()
-        self._buffer = io.BytesIO(initial_bytes)
+    async def aread(self, size: int = -1) -> bytes:
+        return self.read(size)
 
-    def read(self, size: int = -1) -> bytes:
-        return self._buffer.read(size)
+    async def awrite(self, b: bytes) -> int:
+        return self.write(b)
 
-    def write(self, b: bytes) -> int:
-        return self._buffer.write(b)
+    async def aclose(self) -> None:
+        self.close()
 
-    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
-        return self._buffer.seek(offset, whence)
+    async def aflush(self) -> None:
+        self.flush()
 
-    def tell(self) -> int:
-        return self._buffer.tell()
-
-    def close(self) -> None:
-        self._buffer.close()
+    async def asplice(self, target: Any, size: int = -1) -> int:
+        chunk = await self.aread(size if size > 0 else 65536)
+        if not chunk:
+            return 0
+        if hasattr(target, "awrite"):
+            res_w: int = await target.awrite(chunk)
+            return res_w
+        elif hasattr(target, "write"):
+            res_sync: int = await asyncio.to_thread(target.write, chunk)
+            return res_sync
+        elif isinstance(target, int) and target != -1:
+            res_fd: int = await asyncio.to_thread(os.write, target, chunk)
+            return res_fd
+        return 0
 
 
 class AsyncSocketIO(io.RawIOBase, AsyncIOBase):
@@ -454,6 +462,7 @@ def patch_python_io() -> None:
     io._orig_open = io.open  # type: ignore[attr-defined]
 
     io.FileIO = DefaultFileIO  # type: ignore[misc]
+    io.BytesIO = AsyncBytesIO  # type: ignore[misc]
     io.AsyncIOBase = AsyncIOBase  # type: ignore[attr-defined]
 
     builtins.open = patched_open

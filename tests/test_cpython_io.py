@@ -169,3 +169,18 @@ async def test_ensure_async_stream() -> None:
     ensured2 = py_native_io.ensure_async_stream(s2, in_place=False)
     assert isinstance(ensured2, py_native_io.AsyncIOStream)
     assert await ensured2.aread(6) == b"Facade"
+
+
+@pytest.mark.asyncio
+async def test_async_bytes_io() -> None:
+    buf = io.BytesIO(b"In-Memory Async Byte Stream")
+    assert isinstance(buf, py_native_io.AsyncBytesIO)
+    assert isinstance(buf, py_native_io.AsyncIOStream)
+
+    data = await buf.aread(9)
+    assert data == b"In-Memory"
+
+    buf.seek(0)
+    written = await buf.awrite(b"Overwritten Payload")
+    assert written == 19
+    assert buf.getvalue() == b"Overwritten Payloade Stream"
