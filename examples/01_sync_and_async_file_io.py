@@ -1,5 +1,6 @@
 """Example 01: OS Syscall Sync vs CPython Built-in Sync vs Async Batch Benchmark."""
 
+import argparse
 import asyncio
 import builtins
 import logging
@@ -15,6 +16,19 @@ import py_native_io  # noqa: E402, F401
 from py_native_io import aprint  # noqa: E402
 
 BATCH_SIZE = 100
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Example 01: OS Sync vs Built-in Sync vs Async Batch Benchmark."
+    )
+    parser.add_argument(
+        "--payload-size-kb",
+        type=int,
+        default=128,
+        help="Payload size in KB per operation (default: 128 KB, max: 2048 KB).",
+    )
+    return parser.parse_args()
 
 
 def run_os_sync_benchmark(sync_filename: str, payload: bytes) -> tuple[float, float, list[bytes]]:
@@ -137,12 +151,18 @@ async def run_async_batch_api_benchmark(
 
 
 async def main() -> None:
-    print(
-        f"=== Example 01: OS Sync vs Built-in Sync vs Async Pipelined vs Async Batch Benchmark "
-        f"({BATCH_SIZE} operations) ==="
-    )
+    args = parse_args()
+    # Limit/clamp payload size between 1 KB and 2048 KB (2 MB)
+    payload_size_kb = max(1, min(args.payload_size_kb, 2048))
+    payload_bytes = payload_size_kb * 1024
+    base_chunk = b"Hello, py-native-io high-performance kernel streams!\n"
+    payload = (base_chunk * (payload_bytes // len(base_chunk) + 1))[:payload_bytes]
+    total_vol_mb = (payload_bytes * BATCH_SIZE) / (1024 * 1024)
 
-    payload = b"Hello, py-native-io high-performance kernel streams!\n" * 10
+    print(
+        f"=== Example 01: OS Sync vs Built-in Sync vs Async Batch Benchmark\n"
+        f"    ({BATCH_SIZE} ops, {payload_size_kb} KB/op, Total: {total_vol_mb:.2f} MB) ==="
+    )
 
     with tempfile.NamedTemporaryFile("w+b", delete=False) as os_sync_tmp:
         os_sync_filename = os_sync_tmp.name
