@@ -2,6 +2,12 @@ pub mod linux;
 pub mod macos;
 pub mod windows;
 
+#[cfg(unix)]
+pub type NativeHandle = std::os::unix::io::RawFd;
+
+#[cfg(windows)]
+pub type NativeHandle = std::os::windows::io::RawHandle;
+
 /// Query whether the host OS kernel supports secure native kernel completion rings.
 pub fn is_kernel_ring_supported() -> bool {
     if std::env::var("PY_NATIVE_IO_FORCE_LEGACY").is_ok() {

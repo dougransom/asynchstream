@@ -1,6 +1,21 @@
 #[cfg(target_os = "linux")]
 use std::os::unix::io::RawFd;
 
+/// Strongly typed io_uring opcode user data identifiers.
+#[repr(u64)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RingOpcode {
+    Read = 0x01,
+    Write = 0x02,
+    Splice = 0x03,
+}
+
+impl RingOpcode {
+    pub fn user_data(self) -> u64 {
+        self as u64
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn parse_kernel_version(release: &str) -> Option<(u32, u32)> {
     let mut parts = release.trim().split('.');
@@ -47,7 +62,7 @@ pub fn submit_uring_read(fd: RawFd, size: usize) -> std::io::Result<Vec<u8>> {
     let read_e = opcode::Read::new(types::Fd(fd), buf.as_mut_ptr(), size as u32)
         .offset(0)
         .build()
-        .user_data(0x01);
+        .user_data(RingOpcode::Read.user_data());
 
     unsafe {
         ring.submission()
@@ -80,7 +95,7 @@ pub fn submit_uring_write(fd: RawFd, bytes: &[u8]) -> std::io::Result<usize> {
     let write_e = opcode::Write::new(types::Fd(fd), bytes.as_ptr(), bytes.len() as u32)
         .offset(u64::MAX)
         .build()
-        .user_data(0x02);
+        .user_data(RingOpcode::Write.user_data());
 
     unsafe {
         ring.submission()
@@ -121,7 +136,7 @@ pub fn submit_uring_splice(
         size as u32,
     )
     .build()
-    .user_data(0x03);
+    .user_data(RingOpcode::Splice.user_data());
 
     unsafe {
         ring.submission()

@@ -8,14 +8,15 @@ use pyo3::types::{PyBytes, PyDict, PyTuple};
 use pyo3_asyncio::tokio::future_into_py;
 
 use crate::engines;
+use crate::file_mode::FileMode;
+use crate::seek_whence::SeekingWhence;
 
 /// Native completion-based file stream wrapping kernel completion rings (io_uring on Linux).
 #[pyclass(subclass)]
 pub struct NativeFileIO {
     file: Mutex<Option<File>>,
     path: PathBuf,
-    is_read: bool,
-    is_write: bool,
+    mode: FileMode,
 }
 
 #[allow(non_local_definitions)]
@@ -33,27 +34,10 @@ impl NativeFileIO {
         let mode_str = mode.unwrap_or("rb");
         let path_str: String = file.str()?.to_str()?.to_string();
         let path = PathBuf::from(path_str);
+        let parsed_mode = FileMode::parse(mode_str);
 
         let mut options = OpenOptions::new();
-        let is_write = mode_str.contains('w') || mode_str.contains('a') || mode_str.contains('+');
-        let is_read = mode_str.contains('r') || mode_str.contains('+') || (!mode_str.contains('w') && !mode_str.contains('a'));
-
-        if is_write {
-            let set_write_mode: fn(&mut OpenOptions, bool) -> &mut OpenOptions = if mode_str.contains('w') {
-                OpenOptions::truncate
-            } else {
-                OpenOptions::append
-            };
-            set_write_mode(options.write(true).create(true), true);
-            if mode_str.contains('+') || mode_str.contains('r') {
-                options.read(true);
-            }
-        } else {
-            options.read(true);
-            if mode_str.contains('+') {
-                options.write(true);
-            }
-        }
+        parsed_mode.configure_open_options(&mut options);
 
         let f = options
             .open(&path)
@@ -61,8 +45,7 @@ impl NativeFileIO {
         Ok(NativeFileIO {
             file: Mutex::new(Some(f)),
             path,
-            is_read,
-            is_write,
+            mode: parsed_mode,
         })
     }
 
@@ -254,13 +237,8 @@ impl NativeFileIO {
         let f = guard
             .as_mut()
             .ok_or_else(|| PyIOError::new_err("I/O operation on closed file."))?;
-        let w = match whence.unwrap_or(0) {
-            0 => std::io::SeekFrom::Start(pos as u64),
-            1 => std::io::SeekFrom::Current(pos),
-            2 => std::io::SeekFrom::End(pos),
-            _ => return Err(pyo3::exceptions::PyValueError::new_err("invalid whence")),
-        };
-        py.allow_threads(|| f.seek(w).map_err(|e| PyIOError::new_err(e.to_string())))
+        let seek_from = SeekingWhence::to_seek_from(whence.unwrap_or(0), pos)?;
+        py.allow_threads(|| f.seek(seek_from).map_err(|e| PyIOError::new_err(e.to_string())))
     }
 
     /// Return the current stream position.
@@ -295,12 +273,12 @@ impl NativeFileIO {
 
     /// Return True if the stream was opened for reading.
     fn readable(&self) -> bool {
-        self.is_read
+        self.mode.readable
     }
 
     /// Return True if the stream was opened for writing.
     fn writable(&self) -> bool {
-        self.is_write
+        self.mode.writable
     }
 
     /// Return True if the stream supports random access seeking.

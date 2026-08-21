@@ -2,6 +2,8 @@
 
 pub mod engines;
 pub mod file_io;
+pub mod file_mode;
+pub mod seek_whence;
 
 use pyo3::prelude::*;
 
