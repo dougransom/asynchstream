@@ -9,6 +9,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyTuple};
 use pyo3_asyncio::tokio::future_into_py;
 
+/// Native completion-based file stream wrapping kernel completion rings (io_uring on Linux).
 #[pyclass(subclass)]
 pub struct NativeFileIO {
     file: Mutex<Option<File>>,
@@ -20,6 +21,7 @@ pub struct NativeFileIO {
 #[allow(non_local_definitions)]
 #[pymethods]
 impl NativeFileIO {
+    /// Open a new native completion file stream for the given path and mode.
     #[new]
     #[pyo3(signature = (file, mode="rb", *_args, **_kwargs))]
     fn new(
@@ -64,6 +66,7 @@ impl NativeFileIO {
         })
     }
 
+    /// Synchronously read up to size bytes from the file stream.
     fn read<'p>(&self, py: Python<'p>, size: Option<isize>) -> PyResult<&'p PyBytes> {
         let mut guard = self
             .file
@@ -91,6 +94,7 @@ impl NativeFileIO {
         Ok(PyBytes::new(py, &buf))
     }
 
+    /// Read bytes directly into a mutable byte buffer (e.g. memoryview or bytearray).
     fn readinto(&self, py: Python, b: &PyAny) -> PyResult<usize> {
         let mut guard = self
             .file
@@ -112,6 +116,7 @@ impl NativeFileIO {
         Ok(n)
     }
 
+    /// Synchronously write bytes to the file stream.
     fn write(&self, py: Python, b: &PyAny) -> PyResult<usize> {
         let bytes: Vec<u8> = if let Ok(v) = b.extract::<Vec<u8>>() {
             v
@@ -134,6 +139,7 @@ impl NativeFileIO {
         })
     }
 
+    /// Asynchronously read up to size bytes using native kernel ring completion.
     fn aread<'p>(&self, py: Python<'p>, size: Option<isize>) -> PyResult<&'p PyAny> {
         let path = self.path.clone();
         let s = size.unwrap_or(-1);
@@ -167,6 +173,7 @@ impl NativeFileIO {
         })
     }
 
+    /// Asynchronously write bytes using native kernel ring completion.
     fn awrite<'p>(&self, py: Python<'p>, b: &PyAny) -> PyResult<&'p PyAny> {
         let bytes: Vec<u8> = if let Ok(v) = b.extract::<Vec<u8>>() {
             v
@@ -197,6 +204,7 @@ impl NativeFileIO {
         })
     }
 
+    /// Synchronously close the underlying file descriptor.
     fn close(&self) -> PyResult<()> {
         let mut guard = self
             .file
@@ -206,11 +214,13 @@ impl NativeFileIO {
         Ok(())
     }
 
+    /// Asynchronously close the underlying file descriptor.
     fn aclose<'p>(&self, py: Python<'p>) -> PyResult<&'p PyAny> {
         self.close()?;
         future_into_py(py, async move { Ok(()) })
     }
 
+    /// Return whether the file stream is closed.
     #[getter]
     fn closed(&self) -> PyResult<bool> {
         let guard = self
@@ -220,6 +230,7 @@ impl NativeFileIO {
         Ok(guard.is_none())
     }
 
+    /// Change the current stream position to pos relative to whence.
     fn seek(&self, py: Python, pos: i64, whence: Option<i32>) -> PyResult<u64> {
         use std::io::Seek;
         let mut guard = self
@@ -238,30 +249,37 @@ impl NativeFileIO {
         py.allow_threads(|| f.seek(w).map_err(|e| PyIOError::new_err(e.to_string())))
     }
 
+    /// Return the current stream position.
     fn tell(&self, py: Python) -> PyResult<u64> {
         self.seek(py, 0, Some(1))
     }
 
+    /// Return True if the stream was opened for reading.
     fn readable(&self) -> bool {
         self.is_read
     }
 
+    /// Return True if the stream was opened for writing.
     fn writable(&self) -> bool {
         self.is_write
     }
 
+    /// Return True if the stream supports random access seeking.
     fn seekable(&self) -> bool {
         true
     }
 
+    /// Flush internal stream write buffers.
     fn flush(&self) -> PyResult<()> {
         Ok(())
     }
 
+    /// Asynchronously flush internal stream write buffers.
     fn aflush<'p>(&self, py: Python<'p>) -> PyResult<&'p PyAny> {
         future_into_py(py, async move { Ok(()) })
     }
 
+    /// Zero-copy kernel space transfer to target_fd via IORING_OP_SPLICE.
     fn asplice<'p>(&self, py: Python<'p>, target_fd: i32, size: Option<usize>) -> PyResult<&'p PyAny> {
         let path = self.path.clone();
         let len = size.unwrap_or(65536);
@@ -314,6 +332,21 @@ fn parse_kernel_version(release: &str) -> Option<(u32, u32)> {
     Some((major, minor))
 }
 
+/// Checks whether Linux `io_uring` is secure and supported on the host system.
+///
+/// # Security Version Gate (Linux >= 5.10 LTS)
+/// Linux kernels prior to 5.10 LTS contain serious security vulnerabilities,
+/// privilege escalation flaws, memory corruption bugs, and use-after-free CVEs
+/// in early `io_uring` implementations (e.g. CVE-2021-3491, CVE-2022-2602, CVE-2021-41073).
+///
+/// Linux 5.10 LTS stabilized capability checks, memory locking, and credential-passing
+/// boundaries for `io_uring`. If the kernel version is < 5.10, this function returns `false`
+/// to safely trigger the fallback thread-pool engine (`FallbackFileIO`).
+///
+/// # Opcode Probing (`IORING_REGISTER_PROBE`)
+/// In addition to kernel version checks, this function registers an `io_uring::Probe` to verify
+/// that required opcodes (`IORING_OP_READ` and `IORING_OP_WRITE`) are allowed by host security
+/// profiles (such as Docker/Kubernetes container `seccomp` filters).
 #[cfg(target_os = "linux")]
 fn is_linux_uring_secure_and_supported() -> bool {
     if let Ok(release) = std::fs::read_to_string("/proc/sys/kernel/osrelease") {
@@ -338,6 +371,7 @@ fn is_linux_uring_secure_and_supported() -> bool {
         && probe.is_supported(io_uring::opcode::Write::CODE)
 }
 
+/// Query whether the host OS kernel supports secure native kernel completion rings.
 #[pyfunction]
 fn is_kernel_ring_supported() -> bool {
     if std::env::var("PY_NATIVE_IO_FORCE_LEGACY").is_ok() {
@@ -361,6 +395,7 @@ fn is_kernel_ring_supported() -> bool {
     }
 }
 
+/// PyO3 C-extension module exporting native kernel completion I/O bindings.
 #[pymodule]
 fn _ext(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(is_kernel_ring_supported, m)?)?;
@@ -368,6 +403,8 @@ fn _ext(_py: Python, m: &PyModule) -> PyResult<()> {
     Ok(())
 }
 
+/// Helper function to submit an IORING_OP_READ submission queue entry (SQE)
+/// and await completion queue entry (CQE) response.
 #[cfg(target_os = "linux")]
 fn submit_uring_read(fd: std::os::unix::io::RawFd, size: usize) -> std::io::Result<Vec<u8>> {
     use io_uring::{opcode, types, IoUring};
@@ -400,6 +437,8 @@ fn submit_uring_read(fd: std::os::unix::io::RawFd, size: usize) -> std::io::Resu
     Ok(buf)
 }
 
+/// Helper function to submit an IORING_OP_WRITE submission queue entry (SQE)
+/// and await completion queue entry (CQE) response.
 #[cfg(target_os = "linux")]
 fn submit_uring_write(fd: std::os::unix::io::RawFd, bytes: &[u8]) -> std::io::Result<usize> {
     use io_uring::{opcode, types, IoUring};
@@ -430,6 +469,8 @@ fn submit_uring_write(fd: std::os::unix::io::RawFd, bytes: &[u8]) -> std::io::Re
     Ok(ret as usize)
 }
 
+/// Helper function to submit an IORING_OP_SPLICE submission queue entry (SQE)
+/// to perform kernel zero-copy transfer between file descriptors.
 #[cfg(target_os = "linux")]
 fn submit_uring_splice(
     fd_in: std::os::unix::io::RawFd,
