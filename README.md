@@ -79,6 +79,21 @@ PY_NATIVE_IO_FORCE_LEGACY=1 uv run pytest
 
 ---
 
+### **Runnable Examples (`examples/`)**
+
+Run any of the numbered demonstration scripts directly with `uv`:
+
+```bash
+uv run python examples/01_sync_and_async_file_io.py      # Sync vs Async file I/O benchmark
+uv run python examples/02_patch_existing_streams.py     # Successive writes on patched io streams
+uv run python examples/03_socket_stream_makefile.py     # Async socket streams via socket.makefile()
+uv run python examples/04_zero_copy_kernel_splice.py    # Zero-copy kernel buffer transfer via asplice()
+uv run python examples/05_in_memory_async_bytes_io.py   # In-memory AsyncBytesIO & AsyncStringIO
+uv run python examples/06_systemwide_io_patching.py     # Systemwide open(), io.FileIO, io.StringIO replacement
+```
+
+---
+
 ## **5. Cross-Platform Engine Matrix**
 
 `py-native-io` targets all primary and secondary OS platforms where Python 3 and Rust operate:
