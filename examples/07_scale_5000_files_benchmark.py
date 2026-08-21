@@ -1,12 +1,15 @@
 """Example 07: Scalability & Performance Benchmark across 5,000 Files."""
 
 import asyncio
+import logging
 import os
 import shutil
 import tempfile
 import time
 
 import py_native_io  # noqa: F401
+
+logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(name)s:%(message)s")
 
 NUM_FILES = 5000
 PAYLOAD = b"High-performance py-native-io kernel ring stream payload\n" * 10

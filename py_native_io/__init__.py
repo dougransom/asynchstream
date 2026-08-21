@@ -1,5 +1,7 @@
 """py-native-io: Native-first cross-platform asynchronous kernel I/O for Python."""
 
+import logging
+
 from py_native_io.base import AsyncIOBase, AsyncIOBaseMeta, AsyncIOStream
 from py_native_io.buffered import (
     AsyncBufferedRandom,
@@ -28,6 +30,8 @@ from py_native_io.patch import (
 )
 from py_native_io.socket import AsyncSocketIO
 
+logger = logging.getLogger("py_native_io")
+
 # Automatically trigger systemwide io class and function patching on package import
 patch_python_io()
 
@@ -51,6 +55,7 @@ __all__ = [
     "WindowsIoRingFileIO",
     "_ext",
     "ensure_async_stream",
+    "logger",
     "patch_python_io",
     "patch_stream",
     "patched_open",

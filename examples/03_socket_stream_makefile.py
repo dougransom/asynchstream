@@ -1,9 +1,12 @@
 """Example 03: Asynchronous Socket Stream Creation via socket.makefile()."""
 
 import asyncio
+import logging
 import socket
 
 import py_native_io  # noqa: F401
+
+logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(name)s:%(message)s")
 
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:

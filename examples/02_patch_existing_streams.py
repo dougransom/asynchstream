@@ -2,9 +2,12 @@
 
 import asyncio
 import io
+import logging
 import tempfile
 
 import py_native_io
+
+logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(name)s:%(message)s")
 
 
 async def main() -> None:

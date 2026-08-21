@@ -1,10 +1,13 @@
 """Example 01: Synchronous and Asynchronous File I/O Benchmarking."""
 
 import asyncio
+import logging
 import tempfile
 import time
 
 import py_native_io  # noqa: F401
+
+logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(name)s:%(message)s")
 
 ITERATIONS = 100
 
