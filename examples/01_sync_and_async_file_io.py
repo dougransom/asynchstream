@@ -1,4 +1,4 @@
-"""Example 01: OS Syscall Sync vs CPython Built-in Sync vs Async Batch Benchmark."""
+"""Example 01: OS Syscall Sync vs CPython Built-in Sync vs aiofiles vs Async Batch Benchmark."""
 
 import argparse
 import asyncio
@@ -10,6 +10,11 @@ import time
 from collections.abc import Callable
 from typing import Any
 
+try:
+    import aiofiles
+except ImportError:
+    aiofiles = None
+
 logging.basicConfig(level=logging.DEBUG, format="%(levelname)s:%(name)s:%(message)s")
 
 import py_native_io  # noqa: E402, F401
@@ -20,7 +25,7 @@ BATCH_SIZE = 100
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Example 01: OS Sync vs Built-in Sync vs Async Batch Benchmark."
+        description="Example 01: OS Sync vs Built-in Sync vs aiofiles vs Async Batch Benchmark."
     )
     parser.add_argument(
         "--payload-size-kb",
@@ -82,6 +87,35 @@ def run_builtin_sync_benchmark(
         f.close()
 
     return t_builtin_write_total, t_builtin_read_total, builtin_reads
+
+
+async def run_aiofiles_benchmark(
+    aiofiles_filename: str, payload: bytes
+) -> tuple[float, float, list[int], list[bytes]]:
+    """Perform asynchronous file I/O operations using third-party aiofiles library."""
+    if aiofiles is None:
+        return 0.0, 0.0, [], []
+
+    async with aiofiles.open(aiofiles_filename, "w+b") as f_aio:
+        # Warmup write
+        await f_aio.write(payload)
+        await f_aio.flush()
+
+        # 1. aiofiles Asynchronous Writes
+        t0 = time.perf_counter()
+        write_tasks = [f_aio.write(payload) for _ in range(BATCH_SIZE)]
+        write_results = list(await asyncio.gather(*write_tasks))
+        await f_aio.flush()
+        t_aio_write_total = (time.perf_counter() - t0) * 1000
+
+        # 2. aiofiles Asynchronous Reads
+        await f_aio.seek(0)
+        t0 = time.perf_counter()
+        read_tasks = [f_aio.read(len(payload)) for _ in range(BATCH_SIZE)]
+        aio_reads = list(await asyncio.gather(*read_tasks))
+        t_aio_read_total = (time.perf_counter() - t0) * 1000
+
+    return t_aio_write_total, t_aio_read_total, write_results, aio_reads
 
 
 async def run_async_pipelined_benchmark(
@@ -160,7 +194,7 @@ async def main() -> None:
     total_vol_mb = (payload_bytes * BATCH_SIZE) / (1024 * 1024)
 
     print(
-        f"=== Example 01: OS Sync vs Built-in Sync vs Async Batch Benchmark\n"
+        f"=== Example 01: OS Sync vs Built-in Sync vs aiofiles vs Async Batch Benchmark\n"
         f"    ({BATCH_SIZE} ops, {payload_size_kb} KB/op, Total: {total_vol_mb:.2f} MB) ==="
     )
 
@@ -169,6 +203,9 @@ async def main() -> None:
 
     with tempfile.NamedTemporaryFile("w+b", delete=False) as builtin_sync_tmp:
         builtin_sync_filename = builtin_sync_tmp.name
+
+    with tempfile.NamedTemporaryFile("w+b", delete=False) as aiofiles_tmp:
+        aiofiles_filename = aiofiles_tmp.name
 
     with tempfile.NamedTemporaryFile("w+b", delete=False) as async_tmp:
         async_filename = async_tmp.name
@@ -184,12 +221,17 @@ async def main() -> None:
         builtin_sync_filename, payload
     )
 
-    # 3. Run Asynchronous Pipelined Benchmark (awrite / aread)
+    # 3. Run aiofiles Asynchronous Benchmark
+    t_aio_w, t_aio_r, aio_write_results, aiofiles_reads = await run_aiofiles_benchmark(
+        aiofiles_filename, payload
+    )
+
+    # 4. Run Asynchronous Pipelined Benchmark (awrite / aread)
     t_async_w, t_async_r, write_results, async_reads = await run_async_pipelined_benchmark(
         async_filename, payload
     )
 
-    # 4. Run Asynchronous Batch API Benchmark (awrite_batch / aread_batch)
+    # 5. Run Asynchronous Batch API Benchmark (awrite_batch / aread_batch)
     t_batch_w, t_batch_r, batch_write_results, batch_reads = await run_async_batch_api_benchmark(
         batch_filename, payload
     )
@@ -201,10 +243,14 @@ async def main() -> None:
         == len(batch_reads)
         == BATCH_SIZE
     )
+    if aiofiles is not None:
+        assert len(aiofiles_reads) == len(aio_write_results) == BATCH_SIZE
     assert len(write_results) == len(batch_write_results) == BATCH_SIZE
 
     print(f"OS Syscall Sync File:      {os_sync_filename}")
     print(f"CPython Built-in File:     {builtin_sync_filename}")
+    if aiofiles is not None:
+        print(f"aiofiles Async File:       {aiofiles_filename}")
     print(f"Async Pipelined File:      {async_filename}")
     print(f"Async Batch Ring File:     {batch_filename}\n")
 
@@ -216,6 +262,11 @@ async def main() -> None:
         f"CPython Built-in Sync {BATCH_SIZE} Writes Total: {t_builtin_w:.3f} ms "
         f"({t_builtin_w / BATCH_SIZE:.3f} ms/op)"
     )
+    if aiofiles is not None:
+        print(
+            f"aiofiles Async {BATCH_SIZE} Writes Total:        {t_aio_w:.3f} ms "
+            f"({t_aio_w / BATCH_SIZE:.3f} ms/op)"
+        )
     print(
         f"Async Pipelined {BATCH_SIZE} Writes Total:       {t_async_w:.3f} ms "
         f"({t_async_w / BATCH_SIZE:.3f} ms/op)"
@@ -233,6 +284,11 @@ async def main() -> None:
         f"CPython Built-in Sync {BATCH_SIZE} Reads Total:  {t_builtin_r:.3f} ms "
         f"({t_builtin_r / BATCH_SIZE:.3f} ms/op)"
     )
+    if aiofiles is not None:
+        print(
+            f"aiofiles Async {BATCH_SIZE} Reads Total:         {t_aio_r:.3f} ms "
+            f"({t_aio_r / BATCH_SIZE:.3f} ms/op)"
+        )
     print(
         f"Async Pipelined {BATCH_SIZE} Reads Total:        {t_async_r:.3f} ms "
         f"({t_async_r / BATCH_SIZE:.3f} ms/op)"
@@ -245,12 +301,25 @@ async def main() -> None:
     w_speedup_batch = ((t_builtin_w - t_batch_w) / t_builtin_w) * 100
     r_speedup_batch = ((t_builtin_r - t_batch_r) / t_builtin_r) * 100
 
-    # Asynchronously gather the final benchmark result prints using aprint
-    await asyncio.gather(
+    speedup_prints = [
         aprint(f"\nAsync Batch vs Built-in Sync Write Speedup: {w_speedup_batch:+.1f}%"),
         aprint(f"Async Batch vs Built-in Sync Read Speedup:  {r_speedup_batch:+.1f}%"),
-        aprint("Success: All batch benchmark operations completed successfully!\n"),
+    ]
+    if aiofiles is not None:
+        w_speedup_aio = ((t_aio_w - t_batch_w) / t_aio_w) * 100
+        r_speedup_aio = ((t_aio_r - t_batch_r) / t_aio_r) * 100
+        speedup_prints.extend(
+            [
+                aprint(f"Async Batch vs aiofiles Write Speedup:       {w_speedup_aio:+.1f}%"),
+                aprint(f"Async Batch vs aiofiles Read Speedup:        {r_speedup_aio:+.1f}%"),
+            ]
+        )
+    speedup_prints.append(
+        aprint("Success: All batch benchmark operations completed successfully!\n")
     )
+
+    # Asynchronously gather the final benchmark result prints using aprint
+    await asyncio.gather(*speedup_prints)
 
 
 if __name__ == "__main__":
